@@ -1,0 +1,6 @@
+.claude/*
+!.claude/agents/
+!.claude/skills/
+books/
+index/
+*.epub
