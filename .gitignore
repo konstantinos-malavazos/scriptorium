@@ -5,3 +5,5 @@ books/
 index/
 *.epub
 .serena/
+__pycache__/
+.venv/
