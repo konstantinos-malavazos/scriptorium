@@ -16,8 +16,8 @@ spoiler-safe reading companion for novels (Discord thread via OpenClaw). Design 
 - **position** — section + scene the reader has reached; a bare section makes the bot ask
   where in it.
 - **cut copy** — the index files up to the position.
-- **chapter 0** — the non-story sections the owner marked "always" at split time (cast
-  list, a reference glossary); in every cut.
+- **chapter 0** — the non-story sections marked "always" at split time, by default or
+  an owner flip (cast list, a reference glossary); in every cut.
 - **brief** — the code-built "story so far" a section worker gets (past only).
 - **recap** — what a returning reader gets on "refresh me" / `/recap`; built by the same
   brief-builder at the reader's position. Never call brief or recap "story so far" alone.
