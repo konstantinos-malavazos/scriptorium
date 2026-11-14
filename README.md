@@ -29,7 +29,7 @@ you are reading the EPUB, listening to the audiobook, or coming back after month
   the text itself states the link.
 - **Every answer names its section.** There is no outside knowledge by default.
 - **`/recap`** (or just "refresh me") confirms your position, then gives about one screen
-  of cited prose on the story so far.
+  of cited prose up to your position.
 - **It measures itself.** An evaluator writes 40 accuracy questions and 10 spoiler traps
   from the raw book, each backed by a verified quote, and a fresh Claude judge marks the
   answers. The Claude Code index must score at least 36/40 with 0 leaks. The bot must land
@@ -42,7 +42,8 @@ books into Claude Code skills.
 
 ## Words used here
 
-- **section** is a unit of the story as the book labels it (`ch 1`, an interlude, `§12`).
+- **section** is a unit of the story as the book labels it (`ch 1`, an interlude), or
+  numbered by the bot where the book has none (`§12`).
 - **chapter** is only something the book itself numbers as one.
 - **scene** is the stretch between the book's own scene breaks.
 - **position** is the section and scene you have reached.
