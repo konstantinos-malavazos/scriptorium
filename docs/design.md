@@ -33,8 +33,9 @@ These names are fixed; `CLAUDE.md` carries the same list.
   scene.
 - **position**: the section and scene the reader has reached.
 - **cut copy**: the index files up to the position.
-- **chapter 0**: the non-story sections the owner marked "always" at split time (a cast
-  list, a reference glossary). They are in every cut.
+- **chapter 0**: the non-story sections marked "always" at split time, by the split's
+  default or by an optional owner flip (a cast list, a reference glossary). They are in
+  every cut.
 - **brief**: the code-built story-so-far that a section worker gets. Past only.
 - **recap**: what a returning reader gets. It is built by the same brief-builder at the
   reader's position.
@@ -44,7 +45,8 @@ Never call either of the last two "story so far" on its own.
 Any medium counts: reading the EPUB, listening on Audible, discussing one scene, or coming
 back after months. Positions and commands use the book's own terms. Audible is one input,
 never the frame. Audible's chapters match Hive's EPUB one to one, and each one except
-ch 13 is split into two ~1h tracks ([#3](https://github.com/konstantinos-malavazos/scriptorium/issues/3)).
+ch 13 is split into two ~1h tracks
+([#3](https://github.com/konstantinos-malavazos/scriptorium/issues/3)).
 
 ---
 
@@ -54,12 +56,27 @@ ch 13 is split into two ~1h tracks ([#3](https://github.com/konstantinos-malavaz
    - **One general script, no per-book code.** It finds sections from the table of
      contents or from divider lines. It finds scenes from a visible gap before a
      paragraph: in Hive, a `No_Indent` paragraph right after body text, 177 scenes in all.
-   - **The owner approves an outline before indexing.** The script prints sections, scene
-     counts, each scene's opening words, and what it takes to be non-story.
-   - **Non-story sections are marked "always" or "drop"** in that same step
-     ([#5](https://github.com/konstantinos-malavazos/scriptorium/issues/5)). The default
-     is "always" before the first chapter and "drop" after the last. "Always" sections
-     become chapter 0. "Drop" sections are never extracted.
+   - **The split approves itself.** The script prints sections, scene counts, each scene's
+     opening words, and what it takes to be non-story. It then runs its own general checks:
+     no lost or duplicated text, no empty scene, unique story-section labels (non-story
+     sections are not counted), no story text left in front of a later section's epigraph,
+     and story being the majority of the book. It is approved only when every check
+     passes; when one fails it stays unapproved and names the failed check.
+     Nothing is indexed from an unapproved split. No human step is needed; validate
+     ([#15](https://github.com/konstantinos-malavazos/scriptorium/issues/15)) re-checks
+     counts later.
+   - **Non-story sections are marked "always" or "drop"**
+     ([#5](https://github.com/konstantinos-malavazos/scriptorium/issues/5)). Before the
+     first story section, the cover, the contents page and empty pages default to "drop"
+     (the contents page names later chapters, a spoiler in every cut); everything else
+     defaults to "always". Text before the first section's epigraph (a title or copyright
+     line) is its own non-story section and takes the same default as any other page
+     before the story: "always" for a title or copyright line, but "drop" if it came from
+     the cover or the contents page. Part pages inside the story and everything after the
+     last story section default to "drop". The owner may flip any mark afterwards; a flip
+     re-runs the checks and can never approve a split that fails them. Re-running the
+     split resets flips to the defaults and names the reset ones. "Always" sections become
+     chapter 0. "Drop" sections are never extracted.
    - **An opening quote (epigraph) is a heading, not a scene.**
    - **Lost paragraph breaks stay lost.** Children of Dune has none: each § is one block
      of text.
