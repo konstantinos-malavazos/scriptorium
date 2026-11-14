@@ -114,9 +114,7 @@ Built with the playbook's solo path: `/charting` from this README, then `/bootst
 
 **Forgetful.** Stores the design decisions so later sessions don't re-argue them: sequential workers with a story-so-far brief, cut copy for spoilers, quote-verified evaluator, web search via a filtering sub-agent.
 
-**Views (`templates/views/`).** Pages to eyeball worker quality:
-- one chapter's extraction next to its "story so far" brief
-- a character's timeline across chapters
+**Quality checks.** Nobody reviews output by eye. The validator rejects bad worker output, its warn-only items go to a log beside the section, and the evaluator is the only quality gate.
 
 **Serena.** Added later, once there is real code to navigate.
 
