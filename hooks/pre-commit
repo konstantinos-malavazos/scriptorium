@@ -1,0 +1,20 @@
+#!/bin/sh
+# Refuse a commit that stages book content: any path inside a books/ or index/ directory at
+# any depth (as .gitignore matches them) or any *.epub in any case. Deletions pass, so a
+# file that leaked in can still be removed. Enable once per clone:
+#     git config core.hooksPath hooks
+
+staged=$(git -c core.quotePath=false diff --cached --name-only --diff-filter=d) || exit 1
+
+blocked=$(printf '%s\n' "$staged" | while IFS= read -r path; do
+    case "/$path" in
+        */books/* | */index/* | *.[eE][pP][uU][bB]) printf '%s\n' "$path" ;;
+    esac
+done)
+
+if [ -n "$blocked" ]; then
+    echo "pre-commit: refusing to commit book content (books/, index/, *.epub):" >&2
+    printf '%s\n' "$blocked" | sed 's/^/  /' >&2
+    exit 1
+fi
+exit 0

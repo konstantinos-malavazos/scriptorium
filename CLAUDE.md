@@ -48,7 +48,8 @@ Run from the repo root; each is green on exit 0.
 - **Stdlib only at runtime, no pip.** The run check imports `core` with `-S` (no
   site-packages). pytest is a test-time tool only.
 - **Public repo, copyrighted books.** Book content and indexes are never committed:
-  `books/`, `index/`, `*.epub` (also the `block-book-content` hook).
+  `books/`, `index/`, `*.epub` (also refused by the committed `hooks/pre-commit`; enable
+  it once per clone with `git config core.hooksPath hooks`).
 
 ## The layer chain
 - Chain: **core** ──► **prompts** ──► **bot**, one specialist agent per layer.
