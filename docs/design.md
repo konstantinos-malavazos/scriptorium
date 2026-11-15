@@ -119,8 +119,8 @@ section-wide summary, so a cut at scene 3 keeps scenes 1–3 untouched.
 }
 ```
 
-(A made-up example, not real Hive content. #15 fixes the fields; where `aka` sits inside a
-scene is settled when the schema is built.)
+(A made-up example, not real Hive content. #15 fixes the fields; `aka` sits on the
+character entry, always together with its `quote`.)
 
 - **Names.** A character already in the brief uses the brief's exact name. A new one gets
   `"new": true` and the name the text uses.
@@ -344,7 +344,8 @@ The stack, the commands and the layer chain (`core → prompts → bot`) are in
 - **Built with the playbook's solo path:** `/charting`, `/bootstrap`, `/cut-backlog`, then
   `/start-ticket` per work unit.
 - **Book content is never committed.** `.gitignore` covers `books/`, `index/` and `*.epub`,
-  and the `block-book-content` hook refuses any commit that touches those paths.
+  and the committed `hooks/pre-commit` hook (enabled once per clone with
+  `git config core.hooksPath hooks`) refuses any commit that stages them.
 - **Serena** indexes the Python code (verdict yes). Markdown under `prompts/` is outside
   the index.
 - **Forgetful** holds the project memory and the stack ruling. The decisions themselves
