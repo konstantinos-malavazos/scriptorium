@@ -22,16 +22,17 @@ def _seen(label: str, scene: int, is_chapter0: bool) -> str:
     return label if is_chapter0 else f"{label} · scene {scene}"
 
 
-def build_brief(chapter0: dict | None, sections: list[tuple[int, str, dict]], upto: Position) -> dict:
-    """{characters, glossary, recent, chapter0} over chapter 0 and everything before `upto`.
+def included_scenes(chapter0: dict | None, sections: list[tuple[int, str, dict]],
+                    upto: Position) -> list[tuple[str, list[dict], bool]]:
+    """(label, scenes, is_chapter0) for everything behind `upto`, in reading order.
 
-    `sections` items are (order, label, record). Chapter 0 counts only once a story section
-    has begun (upto.order >= 1) and seeds the names for section 1.
+    The one inclusion rule shared by the brief and the cut: chapter 0 once a story section
+    has begun, every section before upto.order, and scenes 1..upto.scene of upto.order.
+    A section with no included scene is left out; chapter 0 is labelled CHAPTER0_LABEL.
     """
     included: list[tuple[str, list[dict], bool]] = []
     if chapter0 is not None and upto.order >= 1:
         included.append((CHAPTER0_LABEL, chapter0["scenes"], True))
-    recent = []
     for order, label, record in sorted(sections, key=lambda s: s[0]):
         if order < upto.order:
             scenes = record["scenes"]
@@ -41,8 +42,18 @@ def build_brief(chapter0: dict | None, sections: list[tuple[int, str, dict]], up
             continue
         if scenes:
             included.append((label, scenes, False))
-            recent.append({"section": label, "scenes": [{"scene": s["scene"], "summary": s["summary"]}
-                                                         for s in scenes]})
+    return included
+
+
+def build_brief(chapter0: dict | None, sections: list[tuple[int, str, dict]], upto: Position) -> dict:
+    """{characters, glossary, recent, chapter0} over chapter 0 and everything before `upto`.
+
+    `sections` items are (order, label, record). Chapter 0 counts only once a story section
+    has begun (upto.order >= 1) and seeds the names for section 1.
+    """
+    included = included_scenes(chapter0, sections, upto)
+    recent = [{"section": label, "scenes": [{"scene": s["scene"], "summary": s["summary"]} for s in scenes]}
+              for label, scenes, is_chapter0 in included if not is_chapter0]
 
     characters: dict[str, dict] = {}
     glossary: dict[str, dict] = {}

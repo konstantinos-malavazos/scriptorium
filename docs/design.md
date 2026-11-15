@@ -147,10 +147,14 @@ no characters, a term that contradicts the glossary
 ### Character files are timelines
 
 ```
-Kell
-- ch 6 · scene 1: old smuggler, takes the key from Marta
-- ch 9 · scene 4: seen in the lower levels with …
+## Kell
+- [ch 6 · 1] old smuggler, takes the key from Marta
+- [ch 9 · 4] seen in the lower levels with …
+- [ch 9 · 4] revealed as "the grey-coated man"
 ```
+
+One line per scene the character is in, each tagged with its section and scene. An alias
+line follows the entry of the scene where the alias first appears.
 
 ---
 
@@ -161,8 +165,9 @@ Decided in [#4](https://github.com/konstantinos-malavazos/scriptorium/issues/4).
 - **A position is a section plus a scene,** in the book's own labels.
 - **Only the reader moves it,** forward or back. Re-reading shrinks the cut. Mentioning a
   place never moves it: a place past the position gets "that's past where you are, move
-  there?", and nothing is searched until the reader says yes. An unknown label gets the
-  list of accepted labels.
+  there?", and nothing is searched until the reader says yes. An unknown label gets asked
+  for again, as the book prints it, with an example; never the list of sections, which
+  would rebuild the contents page the split drops.
 - **A bare section makes the bot ask where in it.** For "I'm at ch 6", it asks: just
   started, finished, or describe the last scene. It answers nothing from ch 6 until the
   reader says.
@@ -183,7 +188,25 @@ Decided in [#5](https://github.com/konstantinos-malavazos/scriptorium/issues/5),
   1..position, plus the scenes up to the position in the current section, plus chapter 0.
   Files merged from the whole book are never served. The cut is code with no model, so
   rebuilding it costs nothing.
-- **Setting the position rebuilds `cut/`.** There is no separate reload step.
+- **Setting the position rebuilds `cut/`.** There is no separate reload step. A position
+  whose sections are not all indexed yet is refused ("still indexing, at ch N").
+- **The cut is four files** in `<book>/cut/`, emptied and written whole on every rebuild:
+  - `position.json`: the book, the section label, the scene, its running order, the
+    opening line (`Up to ch 6 · scene 3:`) and the printed chapter-0 labels.
+  - `characters.md`: one timeline per character, a line per scene (see above).
+  - `glossary.md`: each term keeps every meaning, oldest first, each tagged with its
+    section and scene. A meaning identical to the one just before it is not repeated.
+  - `timeline.md`: one `##` per section in reading order, chapter 0 first, then one line
+    per scene with its events nested under it. Past sections are not collapsed.
+- **Every cut entry carries its citation,** so an answer copies tags and never builds them:
+  - a story entry: section plus scene, `[ch 6 · 2]` or `[§12 · 1]`;
+  - a chapter-0 entry: the book's printed label, `[Dramatis Personae]`. The worker sees
+    chapter 0 as one merged scene, so with several units each entry carries every label
+    (`[Dramatis Personae] [Glossary]`).
+- **Claude Code asks through the `/ask-book` skill.** It runs `cut build`, and a
+  `book-answerer` sub-agent (`Read` only) reads the four cut files whole and nothing else.
+  The skill never reads `index/`. `cut check` then tests the reply by code before it is
+  relayed word for word, with one retry.
 - **The thread reads the cut from disk for every question,** through the cut script,
   taking only what the question needs. It never holds the cut in its session: compaction
   and the 240-minute idle reset would drop it anyway.
@@ -204,9 +227,16 @@ Decided in [#5](https://github.com/konstantinos-malavazos/scriptorium/issues/5),
   ([#11](https://github.com/konstantinos-malavazos/scriptorium/issues/11)).
 - **Indexing progress is posted in the thread** ("ch 3 done (3/18)"), and it ends with
   "Ready. Where are you?" A question asked during indexing gets "still indexing, at ch N".
-- **Every answer names its section** (`ch 9: …`), so each claim can be checked.
-- **No outside knowledge by default.** If something is not in the cut, the answer is "you
-  haven't got there yet" or "I don't know".
+- **Every fact in an answer carries a citation** copied from the cut, `[ch 9 · 2]` or a
+  printed chapter-0 label such as `[Dramatis Personae]`, so each claim can be checked.
+  Square brackets are reserved for citations. `cut check` rejects a reply whose first line
+  is not the position line, or that cites an unknown label, a section past the reader's, a
+  scene the section doesn't have, or a scene past the reader's. A later section is
+  rejected before its scene count is looked at, so no error reveals its size.
+- **No outside knowledge by default.** If something is not in the cut, everything after
+  the position line is exactly "That's not in what you've read so far." It is the one
+  fallback: the answerer cannot tell "later in the book" from "never", and a "not yet"
+  would itself be a spoiler.
 - **Recap** ([#13](https://github.com/konstantinos-malavazos/scriptorium/issues/13)), on
   "refresh me", "where were we?" or `/recap`:
   - **It confirms the position first,** because a stale position is a spoiler.
@@ -270,6 +300,7 @@ each agent file, so that a score change can be traced to the instructions.
 | Role | Model | Effort |
 |---|---|---|
 | Claude Code section workers | Opus 5.5 (`claude-opus-5-5`) | `medium` |
+| Claude Code answerer | Opus 5.5 (`claude-opus-5-5`) | `medium` |
 | Evaluator question writer | Fable 5.2 | `high` |
 | Evaluator judge | Opus 5.5 | `medium` |
 | Bot version (indexing and answering) | DeepSeek V4 Flash, as the bot is configured | as configured |
