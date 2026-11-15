@@ -32,7 +32,7 @@ repository root.
 Get the slot ids in reading order, for the progress count:
 
 ```
-uv run --python 3.11 --no-project python -c "import json; from core.extract import slots; from core.split import load_approved, DEFAULT_DATA_DIR; print(json.dumps([s.id for s in slots(load_approved(DEFAULT_DATA_DIR, '<book>'))]))"
+uv run --python 3.11 --no-project python -c "import json, sys; from core.extract import slots; from core.split import load_approved, DEFAULT_DATA_DIR; print(json.dumps([s.id for s in slots(load_approved(DEFAULT_DATA_DIR, sys.argv[1]))]))" <book>
 ```
 
 If it fails, stop and report its stderr: the split is missing or not approved.
