@@ -54,4 +54,13 @@ on the diff; you do not load it while writing.
 15. **Never claim a green build or a passing test you did not see.** Quote the command and
     its result.
 
-Not here on purpose: style, naming, readability, comments and documentation. Review catches those through `bot-standards`, and carrying them here would make this file as long as the one it replaces.
+## Comments
+
+16. **A comment clarifies the code, or it does not exist.** Write one only for a
+    non-obvious why, a trap, or a contract a caller relies on. No narration: never restate
+    what the code does, and never put ticket ids, plan steps, grilling answers, review
+    findings or build history in a comment, a docstring or an HTML comment in a Markdown
+    file. `bot/SKILL.md` speaks to the agent that runs it, not about how it was built. That
+    history belongs in the commit message and the handoffs.
+
+Not here on purpose: style, naming, readability and documentation. Review catches those through `bot-standards`, and carrying them here would make this file as long as the one it replaces.

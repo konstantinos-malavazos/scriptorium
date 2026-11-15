@@ -41,6 +41,14 @@ description: >-
 - Resolve every member you call with `find_symbol`; never assume it exists or what it takes.
 - Run `get_diagnostics_for_file` on each changed file, before the build.
 
+## Comments
+- A comment clarifies the code, or it does not exist: only a non-obvious why, a trap, or a
+  contract a caller relies on.
+- `[MAJOR]` — any narrating comment: one that restates what the code does, or carries
+  ticket ids, plan steps, grilling answers, review findings or build history. This covers
+  code comments, docstrings and HTML comments in Markdown. That history belongs in the
+  commit message and the handoffs.
+
 ## Vendoring note
 If you have an authoritative in-house standard, vendor it here **verbatim** and pin it to
 a specific commit, so the skill matches the source of truth exactly.
