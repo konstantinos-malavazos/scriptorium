@@ -23,6 +23,7 @@ SUMMARY_MIN_WORDS = 8
 SUMMARY_MAX_WORDS = 120
 
 _FENCE = re.compile(r"```json[ \t]*\n(.*)\n```", re.DOTALL)
+_WORD = re.compile(r"[^\W_]+")
 _QUOTES = str.maketrans({c: '"' for c in "“”„‟″"} | {c: "'" for c in "‘’‚‛′"})
 
 
@@ -143,6 +144,21 @@ def _check_scene(scene: object, i: int, scene_texts: list[str], names: set[str],
     return errors
 
 
+def _lossy(old: str, new: str) -> bool:
+    """Whether a re-listed meaning looks like it dropped the old one rather than restating it.
+
+    A meaning replaces the old one in the brief, so a bare update ("also ...") or a much
+    thinner one loses what was established. Same-length rewording is not lossy.
+    """
+    old_words = _WORD.findall(old.casefold())
+    new_words = _WORD.findall(new.casefold())
+    if new_words[:1] == ["also"]:
+        return True
+    distinct = set(old_words)
+    kept = distinct & set(new_words)
+    return 2 * len(kept) < len(distinct) or 2 * len(new_words) < len(old_words)
+
+
 def _warnings(record: dict, brief: dict, chapter0: bool) -> list[str]:
     glossary = {g["term"].casefold(): g["meaning"] for g in brief.get("glossary") or []}
     warnings: list[str] = []
@@ -155,7 +171,7 @@ def _warnings(record: dict, brief: dict, chapter0: bool) -> list[str]:
             warnings.append(f"{where}no characters")
         for term in scene["terms"]:
             old = glossary.get(term["term"].casefold())
-            if old is not None and " ".join(old.split()).casefold() != " ".join(term["meaning"].split()).casefold():
+            if old is not None and _lossy(old, term["meaning"]):
                 warnings.append(f'{where}term "{term["term"]}" redefined: brief says "{old}", '
                                 f'reply says "{term["meaning"]}"')
     return warnings

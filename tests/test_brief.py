@@ -86,6 +86,11 @@ def test_glossary_keeps_latest_meaning_and_spelling():
     assert brief["glossary"] == [{"term": "glass", "meaning": "a mirror"}]
 
 
+def test_a_re_listed_term_shows_the_newest_meaning_reached_by_the_position():
+    assert build_brief(CH0, SECTIONS, Position(3, 1))["glossary"] == [{"term": "Glass", "meaning": "a lens"}]
+    assert build_brief(CH0, SECTIONS, Position(3, 2))["glossary"] == [{"term": "glass", "meaning": "a mirror"}]
+
+
 def test_recent_is_the_last_sections_from_scene_summaries_without_chapter_0():
     brief = build_brief(CH0, SECTIONS, Position(3, 1))
     assert RECENT_SECTIONS == 3

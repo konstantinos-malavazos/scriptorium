@@ -86,6 +86,10 @@ Each entry in `terms` is an object `{"term": ..., "meaning": ...}`. List a term 
 it is new to the brief's glossary, or when this section changes what it means. `term` may
 not be empty. `meaning` is what the text has established, nothing more.
 
+A term you list again replaces the glossary's meaning, so its `meaning` is the term's full
+current meaning: what the glossary already says, with this section's change worked in.
+Never write only the change, such as "also a curse word".
+
 ## Chapter 0
 
 When "Your section" says `"chapter 0"`, the text is the book's front or back matter that

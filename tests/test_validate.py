@@ -249,6 +249,25 @@ def test_redefined_brief_term_only_warns_and_shows_both_meanings():
     assert warnings == ['scene 1: term "scrapper" redefined: brief says "a scavenger kid", reply says "a guard dog"']
 
 
+@pytest.mark.parametrize("old, new, warns", [
+    ("a scavenger kid", "also sells scrap to the guards", True),
+    ("a scavenger kid", "Also, a scavenger kid who sells scrap", True),
+    ("a scavenger kid from the lower docks", "a guard dog from the hills", True),
+    ("kid kid kid kid scavenger", "kid scavenger", True),
+    ("a scavenger kid from the docks", "a kid from the docks who scavenges", False),
+    ("a scavenger kid", "A  scavenger\nKID", False),
+    ("a scavenger kid", "a scavenger kid who now sells scrap to the guards", False),
+])
+def test_a_re_listed_term_warns_only_when_the_update_looks_lossy(old, new, warns):
+    r = good()
+    r["scenes"][0]["terms"] = [{"term": "Scrapper", "meaning": new}]
+    brief = BRIEF | {"glossary": [{"term": "Scrapper", "meaning": old}]}
+    record, errors, warnings = validate(json.dumps(r), section="ch 2", scene_texts=TEXTS, brief=brief, chapter0=False)
+    assert record == r and errors == []
+    expected = [f'scene 1: term "Scrapper" redefined: brief says "{old}", reply says "{new}"'] if warns else []
+    assert warnings == expected
+
+
 def test_warnings_are_not_computed_for_a_rejected_reply():
     r = copy.deepcopy(good())
     r["scenes"][0]["summary"] = "Short."

@@ -6,7 +6,7 @@ import re
 import pytest
 
 from core.brief import Position
-from core.cut import FALLBACK, build_cut, check_answer, cut_dir, main, parse_position, position_line
+from core.cut import FALLBACK, build_cut, check_answer, citations, cut_dir, main, parse_position, position_line
 from core.extract import run
 from core.split import load_approved
 from tests.index_fixture import StubWorker, fixture_split, write_split
@@ -220,3 +220,9 @@ def test_cli_check_exit_codes(data, capsys, monkeypatch):
 def test_cli_check_exits_2_without_a_cut(data, capsys, monkeypatch):
     code, _, err = cli(capsys, monkeypatch, "check", BOOK, "--data-dir", str(data), stdin=f"{LINE}\n{FALLBACK}")
     assert code == 2 and "build" in err
+
+
+def test_citations_are_parsed_as_section_and_scene():
+    answer = f"{LINE}\nIlse [ch 3 · 1], Orrin [Cast], the glass [§12 · 3] and [ch 6 · x] [ch 6 ·2]."
+    assert citations(answer) == [("ch 3", 1), ("Cast", None), ("§12", 3), ("ch 6 · x", None), ("ch 6 ·2", None)]
+    assert citations(f"{LINE}\n{FALLBACK}") == []
