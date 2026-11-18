@@ -333,7 +333,11 @@ Decided in [#2](https://github.com/konstantinos-malavazos/scriptorium/issues/2),
   `openclaw agent`, because the bot's exec tool marks the loop with `OPENCLAW_SHELL=exec`,
   and that marker refuses gateway `agent` turns; the marker is left in place. The temp cwd
   is created per attempt and removed after it, never under the book's data dir, because it
-  bounds the run's workspace and file tools.
+  bounds the run's workspace and file tools. When a reply does not parse, the bot finds the
+  first mismatched closing bracket and tries dropping that one stray closer, then inserting
+  the closers it skipped; it keeps the result only if it then parses, and logs each repair
+  (section, attempt, bracket, position) in `<data>/<book>/run.log`. A cut-off reply or a
+  second slip is not repaired, and Claude Code's `/index-book` does not repair at all.
 - **Indexing model:** `deepseek-index/deepseek-v4-flash` is the same DeepSeek V4 Flash
   under its own provider in `openclaw.json`, with a 200k context cap so a long section's
   prompt fits. Chat keeps its 80k cap, which makes chat sessions flush to memory and

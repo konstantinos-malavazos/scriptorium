@@ -19,6 +19,7 @@ from bot import openclaw
 from bot.new_thread import book_name, open_thread, read_threads, thread_for
 from core.extract import INSTRUCTIONS, Outcome, _write_text, next_step, slots, submit
 from core.split import SplitNotApproved, load_approved
+from core.validate import parse_reply
 
 DONE_LINE = "Ready. Where are you? Give a section and scene."
 STATUS_FILE = "status.json"
@@ -65,6 +66,43 @@ def _fail(data_dir: Path, book: str, thread: str, line: str) -> None:
 
 # ---- run: the loop ----
 
+def _repair_closer(reply: str) -> tuple[str, str] | None:
+    """Fix one bracket slip at the first mismatched closer: (repaired reply, log note), or None.
+
+    Only for a reply parse_reply rejects, and a fix is kept only if parse_reply then reads it.
+    A reply that ends with brackets still open is left alone: that is a cut-off reply, not a slip.
+    """
+    if parse_reply(reply)[0] is not None:
+        return None
+    opener = {"}": "{", "]": "["}
+    closer = {"{": "}", "[": "]"}
+    stack: list[str] = []
+    in_string = escaped = False
+    for i, ch in enumerate(reply):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in closer:
+            stack.append(ch)
+        elif ch in opener:
+            if stack and stack[-1] == opener[ch]:
+                stack.pop()
+                continue
+            candidates = [(reply[:i] + reply[i + 1:], f"dropped a stray '{ch}' at char {i}")]
+            if opener[ch] in stack:
+                depth = len(stack) - 1 - stack[::-1].index(opener[ch])
+                missing = "".join(closer[o] for o in reversed(stack[depth + 1:]))
+                candidates.append((reply[:i] + missing + reply[i:], f"inserted '{missing}' at char {i}"))
+            return next(((text, note) for text, note in candidates if parse_reply(text)[0] is not None), None)
+    return None
+
+
 def run(data_dir: Path, book: str) -> int:
     """Index every slot still missing. 0 = ready, 1 = a slot was rejected twice, 2 = openclaw failed."""
     thread = thread_for(data_dir, book)
@@ -94,6 +132,11 @@ def run(data_dir: Path, book: str) -> int:
                 failure = f"Indexing {book} stopped at {at}: openclaw failed ({e}). " + _resume(book)
                 _fail(data_dir, book, thread, failure)
                 return 2
+            repaired = _repair_closer(reply)
+            if repaired is not None:
+                reply, note = repaired
+                # stdout is run.log; the note carries offsets and brackets only, never the book's text.
+                print(f"{slot.id} attempt {step.attempt}: repaired the reply's JSON ({note})", flush=True)
             result = submit(data_dir, book, slot.id, reply)
             if result.outcome is Outcome.ACCEPTED:
                 openclaw.post(thread, "chapter 0 done" if slot.chapter0 else f"{at} done ({done + 1}/{len(story)})")
