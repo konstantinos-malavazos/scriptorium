@@ -182,6 +182,22 @@ def check_answer(answer: str, approved: dict, upto: Position) -> list[str]:
     return list(dict.fromkeys(errors))
 
 
+def citations(answer: str) -> list[tuple[str, int | None]]:
+    """Every `[...]` in an answer, in order, as (label, scene).
+
+    `[<label> · <k>]` gives (label, k); anything else, a chapter-0 label included, gives
+    (the bracket's text, None). Nothing is checked against a book.
+    """
+    out: list[tuple[str, int | None]] = []
+    for cited in _CITATION.findall(answer):
+        label, sep, k = cited.rpartition(" · ")
+        if sep and k.isascii() and k.isdigit():
+            out.append((label, int(k)))
+        else:
+            out.append((cited, None))
+    return out
+
+
 def _build(book: str, position: str, data_dir: Path) -> int:
     approved = load_approved(data_dir, book)
     upto = parse_position(approved, position)

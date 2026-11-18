@@ -1,0 +1,1 @@
+../../../prompts/skills/evaluate-book/SKILL.md
