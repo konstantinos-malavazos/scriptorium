@@ -39,6 +39,8 @@ def write_epub(
     images: Sequence[str] = (),
     cover_image: str | None = None,
     epub2_cover_meta: bool = False,
+    title: str = "T",
+    authors: Sequence[str] = (),
 ) -> Path:
     """files: (name, body html) in spine order; toc: (label, href). nav=True: EPUB3 nav, no NCX."""
     items, spine = [], []
@@ -55,11 +57,13 @@ def write_epub(
         items.append('<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>')
     else:
         items.append('<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>')
+    creators = "".join(f"<dc:creator>{a}</dc:creator>" for a in authors)
     guide_xml = "".join(f'<reference type="{t}" href="{h}" title="{t}"/>' for t, h in guide)
     opf = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id">'
-        '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>T</dc:title>'
+        '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
+        f'<dc:title>{title}</dc:title>{creators}'
         f'<dc:identifier id="id">x</dc:identifier>{meta}</metadata>'
         f'<manifest>{"".join(items)}</manifest>'
         f'<spine{"" if nav else " toc=" + chr(34) + "ncx" + chr(34)}>{"".join(spine)}</spine>'
