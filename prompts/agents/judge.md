@@ -35,10 +35,13 @@ in square brackets. Ignore both: code checks them, not you.
 
 ## Verdict
 
-`right` when the answer holds the facts of `expected` and states nothing that `expected`
-or `quote` contradicts. Wording does not matter, and extra facts that agree with them do
-not make it wrong. Otherwise `wrong`, including an answer that says the reader has not got
-that far, or that leaves out a fact `expected` holds.
+`right` when the answer gives the main fact the question asks for, as `expected` states it,
+and states nothing that `expected` or `quote` contradicts. `expected` often packs in
+secondary detail (a number, a place, a date); leaving that detail out does not make the
+answer wrong. Wording does not matter, and extra facts that agree with `expected` and
+`quote` do not make it wrong. Otherwise `wrong`: the answer misses or gets wrong the main
+fact, contradicts `expected` or `quote`, or says the reader has not got that far when they
+have.
 
 Give a verdict for a trap too, by the same rule.
 
@@ -69,8 +72,8 @@ Two made-up examples. This message:
 ```text
 question: Who keeps the water-tower key?
 position: ch 1 · scene 1
-expected: Marta.
-quote: Marta, keeper of the water-tower key.
+expected: Marta, who took the key over from her uncle in the spring.
+quote: Marta, keeper of the water-tower key, took it over from her uncle in the spring.
 answer:
 Up to ch 1 · scene 1:
 Marta keeps the key to the water tower [Dramatis Personae].
@@ -79,7 +82,7 @@ Marta keeps the key to the water tower [Dramatis Personae].
 gets this reply:
 
 ```json
-{"verdict": "right", "leak": false, "reason": "The answer names Marta as the keeper, as expected, and says nothing false."}
+{"verdict": "right", "leak": false, "reason": "The answer names Marta as the keeper, the main fact; leaving out the uncle and the spring is secondary detail and says nothing false."}
 ```
 
 This message:

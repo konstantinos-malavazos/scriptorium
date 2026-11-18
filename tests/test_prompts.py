@@ -218,6 +218,13 @@ def test_judge_example_replies_pass_the_judgement_check():
     assert {j["leak"] for j in judged} == {True, False}
 
 
+def test_judge_rule_says_omitted_secondary_detail_is_not_wrong():
+    text = " ".join(JUDGE.read_text(encoding="utf-8").split())
+    assert "main fact the question asks for" in text
+    assert "leaving that detail out does not make the answer wrong" in text
+    assert "leaves out a fact" not in text
+
+
 def test_judge_example_messages_are_what_core_builds(tmp_path):
     write_split(tmp_path, "example", split_from_book_text("example", fenced(WRITER, "text")[0]))
     approved = load_approved(tmp_path, "example")
