@@ -12,7 +12,7 @@ from bot.index_bot import DONE_LINE
 from core.extract import INSTRUCTIONS, Step, next_step, slots
 from core.split import load_approved
 from tests.epub_fixture import divider_book, toc_book
-from tests.index_fixture import StubWorker, fixture_split, write_split
+from tests.index_fixture import StubWorker, fixture_split, valid_reply, write_split
 
 BOOK = "fx"
 THREAD = "500"
@@ -192,6 +192,96 @@ def test_status_tracks_the_current_section_while_running(data, monkeypatch):
         {"state": "indexing", "at": "ch 2", "done": 1, "total": 3, "pid": pid, "thread": THREAD},
         {"state": "indexing", "at": "ch 3", "done": 2, "total": 3, "pid": pid, "thread": THREAD},
     ]
+
+
+# ---- run: one bracket slip in a reply ----
+
+def asked(step: Step, questions: list[str] | None = None) -> str:
+    """A valid compact reply whose last scene has open questions, so it ends `"]}]}` like a real one."""
+    reply = valid_reply(step)
+    reply["scenes"][-1]["open_questions"] = questions or ["who left the lantern lit?"]
+    return json.dumps(reply, ensure_ascii=False, separators=(",", ":"))
+
+
+def stray(good: str) -> str:
+    return good[:-4] + "}" + good[-4:]
+
+
+def unclosed(good: str) -> str:
+    return good[:-4] + good[-3:]
+
+
+class Slipping:
+    """Answers with `asked`; s00's first attempt gets `slip` applied, and both texts are kept."""
+
+    def __init__(self, slip: Callable[[str], str]) -> None:
+        self.slip, self.good, self.sent = slip, "", ""
+
+    def __call__(self, step: Step) -> str:
+        reply = asked(step)
+        if (step.slot.id, step.attempt) == ("s00", 1):
+            self.good, self.sent = reply, self.slip(reply)
+            return self.sent
+        return reply
+
+
+def first_step(data) -> Step:
+    step = next_step(data, BOOK, INSTR)
+    assert step is not None
+    return step
+
+
+@pytest.mark.parametrize("slip, note", [
+    (stray, "dropped a stray '}' at char {at}"),
+    (unclosed, "inserted ']' at char {at}"),
+])
+def test_one_bracket_slip_is_repaired_logged_and_accepted_first_time(data, monkeypatch, capsys, slip, note):
+    worker = Slipping(slip)
+    stub = fake(monkeypatch, data, worker=worker)
+    assert index_bot.run(data, BOOK) == 0
+    assert ("s00", 1) in stub.attempts and ("s00", 2) not in stub.attempts
+    assert stub.posts[0] == "chapter 0 done"
+    assert not list(sections(data).glob("s00.rejected-*"))
+    saved = json.loads((sections(data) / "s00.json").read_text(encoding="utf-8"))
+    assert saved == json.loads(worker.good)
+    out = capsys.readouterr().out
+    expected = f"s00 attempt 1: repaired the reply's JSON ({note.replace('{at}', str(len(worker.good) - 4))})"
+    assert out.splitlines() == [expected]
+
+
+def test_an_unrepairable_reply_reaches_the_validator_unchanged_and_logs_nothing(data, monkeypatch, capsys):
+    worker = Slipping(lambda good: good[:-1] + ",}")
+    fake(monkeypatch, data, worker=worker)
+    assert index_bot.run(data, BOOK) == 0
+    assert (sections(data) / "s00.rejected-1.txt").read_text(encoding="utf-8") == worker.sent
+    errors = (sections(data) / "s00.rejected-1.errors.txt").read_text(encoding="utf-8")
+    assert errors.startswith("the reply is not valid JSON (")
+    assert "repaired" not in capsys.readouterr().out
+
+
+def test_repair_leaves_a_reply_that_already_parses_alone(data):
+    assert index_bot._repair_closer(asked(first_step(data))) is None
+
+
+def test_repair_reads_a_fenced_reply_like_the_validator(data):
+    good, fence = asked(first_step(data)), "```json\n"
+    repaired = index_bot._repair_closer(fence + stray(good) + "\n```")
+    assert repaired == (fence + good + "\n```", f"dropped a stray '}}' at char {len(fence) + len(good) - 4}")
+
+
+def test_repair_ignores_brackets_inside_strings(data):
+    good = asked(first_step(data), ['she wrote "]}" on the door', "a back\\slash ]} here", "ends in \\"])
+    assert '\\"]}\\"' in good and "\\\\slash" in good and '\\\\"]' in good
+    assert index_bot._repair_closer(stray(good)) == (good, f"dropped a stray '}}' at char {len(good) - 4}")
+
+
+@pytest.mark.parametrize("damage", [
+    pytest.param(lambda good: good[:-2], id="cut off before its last closers"),
+    pytest.param(lambda good: "{]" + stray(good)[1:], id="two slips"),
+    pytest.param(lambda good: good[:-1] + ",}", id="trailing comma"),
+])
+def test_repair_gives_up_on_anything_but_one_slip(data, damage):
+    assert index_bot._repair_closer(damage(asked(first_step(data)))) is None
 
 
 # ---- openclaw seam helpers ----
