@@ -9,7 +9,6 @@ start and status each print one line for the agent to relay as it stands.
 import argparse
 import json
 import os
-import secrets
 import shutil
 import subprocess
 import sys
@@ -82,11 +81,14 @@ def run(data_dir: Path, book: str) -> int:
                         pid=os.getpid(), thread=thread, detail="")
             prompt = data_dir / book / "work" / f"{slot.id}.prompt.md"
             _write_text(prompt, step.prompt)
-            session = f"{book}-{slot.id}-a{step.attempt}-{secrets.token_hex(4)}"
             try:
-                reply = openclaw.reply_text(openclaw.call(
-                    ["agent", "--message-file", str(prompt), "--session-id", session,
-                     "--model", INDEX_MODEL, "--timeout", str(AGENT_TIMEOUT_S), "--json"]))
+                # `agent exec`, not gateway `agent`: the exec tool's OPENCLAW_SHELL=exec marker, which this
+                # loop inherits and must keep, refuses gateway turns. Each run gets its own throwaway session;
+                # the empty temp cwd keeps its workspace and file tools away from the book's data.
+                with tempfile.TemporaryDirectory(prefix=f"scriptorium-{book}-") as cwd:
+                    reply = openclaw.reply_text(openclaw.call(
+                        ["agent", "exec", "--message-file", str(prompt), "--model", INDEX_MODEL,
+                         "--cwd", cwd, "--timeout", str(AGENT_TIMEOUT_S), "--json"]))
             except openclaw.OpenClawError as e:
                 # Never submit here: a non-reply would use up the slot's one retry.
                 failure = f"Indexing {book} stopped at {at}: openclaw failed ({e}). " + _resume(book)

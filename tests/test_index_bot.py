@@ -1,6 +1,5 @@
 import json
 import os
-import re
 import subprocess
 import sys
 from collections.abc import Callable, Collection
@@ -53,7 +52,8 @@ class FakeOpenClaw:
         self.down, self.envelope = down, envelope
         self.calls: list[list[str]] = []
         self.posts: list[str] = []
-        self.sessions: list[str] = []
+        self.attempts: list[tuple[str, int]] = []
+        self.cwds: list[Path] = []
         self.events: list[str] = []
 
     def __call__(self, args: list[str]) -> str:
@@ -66,21 +66,29 @@ class FakeOpenClaw:
             self.events.append("create")
             assert (self.data / self.book / f"{self.book}.epub").exists()
             return json.dumps({"threadId": THREAD})
-        assert args[0] == "agent" and args[-1] == "--json"
+        # OpenClaw's exec-marker guard: under the bot's exec tool a gateway `agent` turn is refused.
+        if os.environ.get("OPENCLAW_SHELL") == "exec" and args[0] == "agent" and args[1:2] != ["exec"]:
+            raise openclaw.OpenClawError("exit 1: Gateway agent from agent exec would lose inter-session attribution.")
+        assert args[:2] == ["agent", "exec"] and args[-1] == "--json"
         assert args[args.index("--model") + 1] == "deepseek-index/deepseek-v4-flash"
-        assert not any(a.startswith("--thinking") for a in args)
         assert args[args.index("--timeout") + 1] == str(index_bot.AGENT_TIMEOUT_S)
+        assert not any(a.startswith(("--thinking", "--isolated", "--state-dir", "--session-id")) for a in args)
+        cwd = Path(args[args.index("--cwd") + 1])
+        assert cwd.is_dir() and not any(cwd.iterdir())
+        assert not cwd.resolve().is_relative_to(self.data.resolve())
+        self.cwds.append(cwd)
         step = next_step(self.data, self.book, INSTR)
         assert step is not None
         assert Path(args[args.index("--message-file") + 1]).read_text(encoding="utf-8") == step.prompt
-        self.sessions.append(args[args.index("--session-id") + 1])
+        self.attempts.append((step.slot.id, step.attempt))
         if (step.slot.id, step.attempt) in self.down:
             raise openclaw.OpenClawError("exit 1: gateway down")
         if self.envelope is not None:
             return self.envelope
-        return json.dumps({"runId": "r1", "status": "ok", "summary": "completed", "result": {
-            "payloads": [{"text": self.worker(step), "mediaUrl": None}],
-            "meta": {"agentMeta": {"sessionId": self.sessions[-1], "contextTokens": 80000}}}})
+        return json.dumps({"ok": True, "status": "ok", "final": "done",
+                           "payloads": [{"text": self.worker(step)}],
+                           "usage": {"input": 1, "output": 1}, "model": "deepseek-v4-flash",
+                           "provider": "deepseek-index", "sessionId": f"exec-{len(self.attempts)}"})
 
 
 @pytest.fixture
@@ -91,6 +99,8 @@ def data(tmp_path):
 
 
 def fake(monkeypatch, data, **kwargs) -> FakeOpenClaw:
+    # The loop always runs under the bot's exec tool, which sets this marker.
+    monkeypatch.setenv("OPENCLAW_SHELL", "exec")
     stub = FakeOpenClaw(data, **kwargs)
     monkeypatch.setattr(openclaw, "call", stub)
     return stub
@@ -122,12 +132,12 @@ def test_run_posts_progress_per_section_and_ends_ready(data, monkeypatch):
     assert sorted(p.name for p in sections(data).glob("*.json")) == ["s00.json", "s01.json", "s02.json", "s03.json"]
 
 
-def test_every_attempt_gets_its_own_session(data, monkeypatch):
+def test_every_attempt_gets_its_own_empty_cwd_and_leaves_none_behind(data, monkeypatch):
     stub = fake(monkeypatch, data, worker=StubWorker({("s02", 1): "not json"}))
     assert index_bot.run(data, BOOK) == 0
-    assert all(re.fullmatch(rf"{BOOK}-s0\d-a\d-[0-9a-f]+", s) for s in stub.sessions)
-    assert len(set(stub.sessions)) == len(stub.sessions) == 5
-    assert [s.split("-")[1:3] for s in stub.sessions if "-s02-" in s] == [["s02", "a1"], ["s02", "a2"]]
+    assert [a for a in stub.attempts if a[0] == "s02"] == [("s02", 1), ("s02", 2)]
+    assert len(set(stub.cwds)) == len(stub.cwds) == len(stub.attempts) == 5
+    assert not any(c.exists() for c in stub.cwds)
     assert "ch 2 done (2/3)" in stub.posts
 
 
@@ -139,7 +149,7 @@ def test_a_second_rejection_stops_with_a_visible_failure(data, monkeypatch):
     assert "fx/sections/s02.rejected-1.txt" in failure and "fx/sections/s02.rejected-2.txt" in failure
     assert "/index-book fx" in failure
     assert DONE_LINE not in stub.posts
-    assert not any("-s03-" in s for s in stub.sessions)
+    assert not any(slot == "s03" for slot, _ in stub.attempts)
     assert (status(data)["state"], status(data)["detail"]) == ("failed", failure)
 
 
@@ -149,10 +159,11 @@ def test_an_openclaw_failure_never_submits_and_a_rerun_resumes_there(data, monke
     assert "gateway down" in stub.posts[-1] and "ch 2" in stub.posts[-1]
     assert not list(sections(data).glob("s02.*"))
     assert status(data)["state"] == "failed"
+    assert not stub.cwds[-1].exists()
 
     again = fake(monkeypatch, data)
     assert index_bot.run(data, BOOK) == 0
-    assert [s.split("-")[1:3] for s in again.sessions] == [["s02", "a1"], ["s03", "a1"]]
+    assert again.attempts == [("s02", 1), ("s03", 1)]
     assert again.posts == ["ch 2 done (2/3)", "ch 3 done (3/3)", DONE_LINE]
 
 
@@ -185,10 +196,13 @@ def test_status_tracks_the_current_section_while_running(data, monkeypatch):
 
 # ---- openclaw seam helpers ----
 
-def test_reply_text_reads_payload_text_from_either_envelope():
-    assert openclaw.reply_text(json.dumps({"payloads": [{"text": "a"}, {"text": "b"}]})) == "a\n\nb"
-    assert openclaw.reply_text(json.dumps({"status": "ok", "result": {"payloads": [{"text": "a"}]}})) == "a"
-    for bad in ("not json", "{}", json.dumps({"payloads": [{"mediaUrl": "x"}]}), "[]"):
+def test_reply_text_reads_the_agent_exec_payload_text():
+    envelope = {"ok": True, "status": "ok", "final": "ignored", "payloads": [{"text": "a"}, {"text": "b"}],
+                "provider": "deepseek-index", "sessionId": "x"}
+    assert openclaw.reply_text(json.dumps(envelope)) == "a\n\nb"
+    for bad in ("not json", "{}", json.dumps({"payloads": [{"mediaUrl": "x"}]}), "[]",
+                json.dumps({"ok": True, "final": "only final"}),
+                json.dumps({"status": "ok", "result": {"payloads": [{"text": "gateway shape"}]}})):
         with pytest.raises(openclaw.OpenClawError):
             openclaw.reply_text(bad)
 
@@ -213,6 +227,19 @@ def test_call_raises_with_the_first_stderr_line(monkeypatch):
     monkeypatch.setattr(openclaw.subprocess, "run", run)
     with pytest.raises(openclaw.OpenClawError, match=r"exit 3: boom$"):
         openclaw.call(["agent"])
+
+
+def test_call_raises_with_the_json_error_message_over_the_generic_stderr_line(monkeypatch):
+    reason = "Gateway agent from agent exec would lose inter-session attribution."
+    stdout = json.dumps({"ok": False, "error": {"type": "cli_error", "message": reason}})
+
+    def run(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 1, stdout, "[openclaw] The CLI command failed.\nmore\n")
+
+    monkeypatch.setattr(openclaw.subprocess, "run", run)
+    with pytest.raises(openclaw.OpenClawError) as e:
+        openclaw.call(["agent", "exec", "--json"])
+    assert str(e.value) == f"exit 1: {reason}"
 
 
 # ---- start ----
@@ -308,6 +335,8 @@ def test_launch_detaches_the_loop_from_the_clone_root_with_the_data_dir(tmp_path
     assert seen["argv"] == [sys.executable, "-m", "bot.index_bot", "run", BOOK, "--data-dir", str(tmp_path)]
     assert seen["start_new_session"] is True and Path(seen["cwd"]) == REPO
     assert Path(seen["stdout"].name) == tmp_path / BOOK / "run.log"
+    # The loop keeps the exec tool's environment, OPENCLAW_SHELL marker included; OpenClaw says never remove it.
+    assert seen.get("env") is None
 
 
 # ---- status ----
