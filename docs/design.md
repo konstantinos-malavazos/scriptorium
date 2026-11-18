@@ -303,7 +303,7 @@ each agent file, so that a score change can be traced to the instructions.
 | Claude Code answerer | Opus 5.5 (`claude-opus-5-5`) | `medium` |
 | Evaluator question writer | Opus 5.5 (`claude-opus-5-5`) | `high` |
 | Evaluator judge | Opus 5.5 | `medium` |
-| Bot version (indexing and answering) | DeepSeek V4 Flash, as the bot is configured | as configured |
+| Bot version (indexing and answering) | DeepSeek V4 Flash, as the bot is configured (indexing: `deepseek-index/deepseek-v4-flash`, 200k context) | maximum thinking, never overridden |
 | Brief-builder, merge, cut | code, no model | — |
 
 The question writer is on Opus 5.5 at `high`, not Fable 5.2: Fable is credits-only on the owner's plan, and Opus 5.5 at high effort is Anthropic's recommended first step.
@@ -325,9 +325,14 @@ Decided in [#2](https://github.com/konstantinos-malavazos/scriptorium/issues/2),
 - **Instructions:** `bot/SKILL.md` is linked into the workspace `skills/`. One AGENTS.md
   line makes it apply in every thread listed in `threads.json`.
 - **Indexing loop:** `index_bot.py` builds each section's brief and writes the prompt to a
-  file. It runs `openclaw agent --message-file … --session-id <book>-s<NN> --json`, a fresh
-  session per section, then validates and saves each reply, and resumes at the first
-  missing section. The loop lives in code; only the model call goes through OpenClaw.
+  file. It runs `openclaw agent --message-file … --session-id
+  <book>-s<NN>-a<attempt>-<nonce> --model deepseek-index/deepseek-v4-flash --json`, a fresh
+  session per attempt (so the retry is fresh too), then validates and saves each reply, and resumes at the first missing
+  section. The loop lives in code; only the model call goes through OpenClaw.
+- **Indexing model:** `deepseek-index/deepseek-v4-flash` is the same DeepSeek V4 Flash
+  under its own provider in `openclaw.json`, with a 200k context cap so a long section's
+  prompt fits. Chat keeps its 80k cap, which makes chat sessions flush to memory and
+  compact. The loop never passes `--thinking`: DeepSeek runs at its maximum thinking.
 - **`bookkit`, the bot's earlier book tool, is retired when the bot version ships.** Its
   workspace files are deleted then, with the owner's approval at that time.
 

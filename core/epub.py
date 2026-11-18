@@ -53,6 +53,8 @@ class Book:
     cover_files: frozenset[str]
     contents_files: frozenset[str]
     blocks: dict[str, list[Block]]  # spine file -> its blocks, in order
+    title: str = ""
+    author: str = ""
 
 
 def _resolve(base_file: str, href: str) -> tuple[str, str]:
@@ -244,6 +246,11 @@ def read_epub(path: str | os.PathLike[str]) -> Book:
             href = _resolve(opf_path, item.get("href", ""))[0]
             manifest[item.get("id", "")] = (href, item.get("media-type", ""), item.get("properties", ""))
 
+        title_el = opf.find("{*}metadata/{*}title")
+        author_el = opf.find("{*}metadata/{*}creator")
+        title = " ".join((title_el.text or "").split()) if title_el is not None else ""
+        author = " ".join((author_el.text or "").split()) if author_el is not None else ""
+
         spine_el = opf.find("{*}spine")
         spine: list[str] = []
         if spine_el is not None:
@@ -309,4 +316,6 @@ def read_epub(path: str | os.PathLike[str]) -> Book:
             if cover_images & parser.images:
                 cover_files.add(file)
 
-    return Book(tuple(spine), tuple(toc), frozenset(cover_files), frozenset(contents_files), blocks)
+    return Book(
+        tuple(spine), tuple(toc), frozenset(cover_files), frozenset(contents_files), blocks, title, author
+    )
