@@ -175,10 +175,10 @@ def test_instructions_ask_a_relisted_term_for_its_full_current_meaning():
     assert "full current meaning" in " ".join(instructions().split())
 
 
-def test_question_writer_is_pinned_to_fable_at_high_with_read_only():
+def test_question_writer_is_pinned_to_opus_at_high_with_read_only():
     fields = frontmatter(WRITER)
     assert fields["name"] == "question-writer"
-    assert fields["model"] == "claude-fable-5-2"
+    assert fields["model"] == "claude-opus-5-5"
     assert fields["effort"] == "high"
     assert fields["tools"] == "Read"
 
