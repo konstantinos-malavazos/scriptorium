@@ -7,7 +7,7 @@ description: >-
   Dispatch a new one for the first attempt and for the one retry; never resume or message
   an earlier one.
 tools: Read
-model: claude-fable-5-2
+model: claude-opus-5-5
 effort: high
 ---
 

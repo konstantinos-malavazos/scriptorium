@@ -301,10 +301,12 @@ each agent file, so that a score change can be traced to the instructions.
 |---|---|---|
 | Claude Code section workers | Opus 5.5 (`claude-opus-5-5`) | `medium` |
 | Claude Code answerer | Opus 5.5 (`claude-opus-5-5`) | `medium` |
-| Evaluator question writer | Fable 5.2 | `high` |
+| Evaluator question writer | Opus 5.5 (`claude-opus-5-5`) | `high` |
 | Evaluator judge | Opus 5.5 | `medium` |
 | Bot version (indexing and answering) | DeepSeek V4 Flash, as the bot is configured | as configured |
 | Brief-builder, merge, cut | code, no model | — |
+
+The question writer is on Opus 5.5 at `high`, not Fable 5.2: Fable is credits-only on the owner's plan, and Opus 5.5 at high effort is Anthropic's recommended first step.
 
 ---
 
