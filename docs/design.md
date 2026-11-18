@@ -325,10 +325,15 @@ Decided in [#2](https://github.com/konstantinos-malavazos/scriptorium/issues/2),
 - **Instructions:** `bot/SKILL.md` is linked into the workspace `skills/`. One AGENTS.md
   line makes it apply in every thread listed in `threads.json`.
 - **Indexing loop:** `index_bot.py` builds each section's brief and writes the prompt to a
-  file. It runs `openclaw agent --message-file … --session-id
-  <book>-s<NN>-a<attempt>-<nonce> --model deepseek-index/deepseek-v4-flash --json`, a fresh
-  session per attempt (so the retry is fresh too), then validates and saves each reply, and resumes at the first missing
-  section. The loop lives in code; only the model call goes through OpenClaw.
+  file. It runs `openclaw agent exec --message-file … --model
+  deepseek-index/deepseek-v4-flash --cwd <empty temp dir> --timeout 1800 --json`, one
+  isolated run per attempt with its own throwaway session (so the retry is fresh too), then
+  validates and saves each reply, and resumes at the first missing section. The loop lives
+  in code; only the model call goes through OpenClaw. It is `agent exec`, not the gateway
+  `openclaw agent`, because the bot's exec tool marks the loop with `OPENCLAW_SHELL=exec`,
+  and that marker refuses gateway `agent` turns; the marker is left in place. The temp cwd
+  is created per attempt and removed after it, never under the book's data dir, because it
+  bounds the run's workspace and file tools.
 - **Indexing model:** `deepseek-index/deepseek-v4-flash` is the same DeepSeek V4 Flash
   under its own provider in `openclaw.json`, with a 200k context cap so a long section's
   prompt fits. Chat keeps its 80k cap, which makes chat sessions flush to memory and

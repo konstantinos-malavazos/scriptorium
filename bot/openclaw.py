@@ -18,14 +18,21 @@ class OpenClawError(Exception):
 
 
 def call(args: list[str]) -> str:
-    """Run `openclaw <args>` and return its stdout; raise OpenClawError on a nonzero exit."""
+    """Run `openclaw <args>` and return its stdout; raise OpenClawError on a nonzero exit.
+
+    The error carries the `--json` reply's `error.message` when there is one: stderr only says
+    "The CLI command failed."."""
     try:
         done = subprocess.run(["openclaw", *args], capture_output=True, text=True, check=False)
     except FileNotFoundError as e:
         raise OpenClawError("openclaw is not on PATH") from e
     if done.returncode != 0:
-        first = next((line for line in done.stderr.splitlines() if line.strip()), "no error output")
-        raise OpenClawError(f"exit {done.returncode}: {first.strip()}")
+        out = _json(done.stdout)
+        error = out.get("error") if isinstance(out, dict) else None
+        reason = error.get("message") if isinstance(error, dict) else None
+        if not (isinstance(reason, str) and reason.strip()):
+            reason = next((line for line in done.stderr.splitlines() if line.strip()), "no error output")
+        raise OpenClawError(f"exit {done.returncode}: {reason.strip()}")
     return done.stdout
 
 
@@ -99,12 +106,12 @@ def listed_threads(stdout: str) -> list[tuple[str, str]]:
 
 
 def reply_text(stdout: str) -> str:
-    """The model's reply text from `openclaw agent --json` (`result.payloads[].text`); raise OpenClawError when there is none."""
-    for layer in _layers(_json(stdout)):
-        payloads = layer.get("payloads")
-        if isinstance(payloads, list):
-            texts = [p["text"] for p in payloads if isinstance(p, dict) and isinstance(p.get("text"), str) and p["text"]]
-            if texts:
-                return "\n\n".join(texts)
+    """The model's reply text from `openclaw agent exec --json` (top-level `payloads[].text`); raise OpenClawError when there is none."""
+    out = _json(stdout)
+    payloads = out.get("payloads") if isinstance(out, dict) else None
+    if isinstance(payloads, list):
+        texts = [p["text"] for p in payloads if isinstance(p, dict) and isinstance(p.get("text"), str) and p["text"]]
+        if texts:
+            return "\n\n".join(texts)
     head = stdout.strip().splitlines()[0][:200] if stdout.strip() else "empty output"
     raise OpenClawError(f"no reply text in the agent output: {head}")
