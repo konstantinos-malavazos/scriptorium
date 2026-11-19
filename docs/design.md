@@ -171,11 +171,22 @@ Decided in [#4](https://github.com/konstantinos-malavazos/scriptorium/issues/4).
 - **A bare section makes the bot ask where in it.** For "I'm at ch 6", it asks: just
   started, finished, or describe the last scene. It answers nothing from ch 6 until the
   reader says.
-- **A described scene is matched within a limit.** The bot searches only up to the
-  remembered position plus the current section, or a rough marker the reader gives ("part
-  two", "about 40%"). With no limit known, it asks for one first. It shows a match as its
-  label plus the scene's first sentence, and the reader confirms.
-- **The position is stored in a file,** not in the thread session.
+- **"Just started" is scene 1, included whole; "finished" is the section's last scene.**
+- **A described scene is matched within a limit.** The bot searches only the section the
+  reader named, or up to the end of the remembered position's section, or up to a rough
+  marker the reader gives: a section, or a percentage ("about 40%", by story word count).
+  "Part two" is not a limit yet. With no limit known, it asks for one first. It shows at
+  most 3 matches, each as its label plus the scene's first sentence, never a summary, and
+  the position moves only when the reader confirms one.
+- **The position is stored in a file,** `<book>/reader.json` (`{label, scene, order}`), not
+  in the thread session. It is written only after `cut/` was rebuilt there, and every read
+  and check rebuilds a cut that drifted from it. A question the bot asked and has not had
+  answered lives only in the conversation; losing it is safe, because the position never
+  moves without an explicit set.
+- **The thread works through one script,** `bot.discuss`: `set` (move the position, or ask
+  where in a bare section), `where`, `place` (is a named section behind the reader?),
+  `find` (the bounded scene search), `read` (the parts of the cut a question needs) and
+  `check` (the code check on an answer). Each finds the book from the thread.
 - **Every answer opens with the position:** `Up to ch 6 · scene 3:`.
 
 ## Spoiler safety
@@ -207,11 +218,15 @@ Decided in [#5](https://github.com/konstantinos-malavazos/scriptorium/issues/5),
   `book-answerer` sub-agent (`Read` only) reads the four cut files whole and nothing else.
   The skill never reads `index/`. `cut check` then tests the reply by code before it is
   relayed word for word, with one retry.
-- **The thread reads the cut from disk for every question,** through the cut script,
-  taking only what the question needs. It never holds the cut in its session: compaction
-  and the 240-minute idle reset would drop it anyway.
-- **The fence is a skill rule:** only the cut script, never `index/`, `sections/` or the
-  EPUB. The evaluator's traps test it.
+- **The thread reads the cut from disk for every question,** through `bot.discuss read`,
+  taking only what the question needs: the reader's own section, the character, glossary
+  and timeline entries matching the question's key words, and a section the question names
+  if it is not past the reader, capped at 12,000 characters. It never holds the cut in its
+  session: compaction and the 240-minute idle reset would drop it anyway. The thread's
+  agent writes the answer from that output and posts it only once `bot.discuss check`
+  passes it, with one retry.
+- **The fence is a skill rule:** only `bot.index_bot` and `bot.discuss`, never `core.*`,
+  `index/`, `sections/` or the EPUB. The evaluator's traps test it.
 - **v1 runs book threads on the bot's normal OpenClaw agent.** Two things would bring back
   a dedicated, sandboxed agent, each as a new grilling ticket:
   - a trap leak where the session log shows a read outside `cut/`;
@@ -226,7 +241,8 @@ Decided in [#5](https://github.com/konstantinos-malavazos/scriptorium/issues/5),
   to book. The bot gets no `message` tool
   ([#11](https://github.com/konstantinos-malavazos/scriptorium/issues/11)).
 - **Indexing progress is posted in the thread** ("ch 3 done (3/18)"), and it ends with
-  "Ready. Where are you?" A question asked during indexing gets "still indexing, at ch N".
+  "Ready. Where are you? Name the section as the book prints it, and the scene if you know
+  it." A question asked during indexing gets "still indexing, at ch N".
 - **Every fact in an answer carries a citation** copied from the cut, `[ch 9 · 2]` or a
   printed chapter-0 label such as `[Dramatis Personae]`, so each claim can be checked.
   Square brackets are reserved for citations. `cut check` rejects a reply whose first line
@@ -319,9 +335,18 @@ Decided in [#2](https://github.com/konstantinos-malavazos/scriptorium/issues/2),
 - **Code** runs from the bot's own clone pinned to `main`
   (`~/.openclaw/tools/scriptorium`), never from the live dev clone.
 - **Data** lives in `~/.openclaw/scriptorium/<book>/`: the EPUB (copied out of
-  `media/inbound/` first), section outputs, the full index, `cut/` and the position file.
-  The scripts take `--data-dir`. Keeping this outside the workspace hides the full index
-  from the bot's memory tools.
+  `media/inbound/` first), section outputs, the full index, `cut/` and, beside it, the
+  position file `reader.json`. The scripts take `--data-dir`. Keeping this outside the
+  workspace hides the full index from the bot's memory tools.
+- **Finding a thread's book:** `threads.json` by thread id, else by the thread's name,
+  recomputed as `<Title> — <Author>` from each saved EPUB (read-only; `threads.json` is
+  unchanged). A thread neither places is not a book thread, except under the books channel:
+  there `status` replies "I can't tell which book this thread is for." and the bot answers
+  nothing. The agent passes the parent channel id it sees; if it sees none, such a thread
+  is treated as any other. `status` says "not a book thread" with exit 2 and the exact line
+  `not a book thread`; the bot answers freely on that alone. Any other failure (a shell
+  quoting error, a mistyped command, an unreadable index) fails closed: the bot answers
+  nothing.
 - **Instructions:** `bot/SKILL.md` is linked into the workspace `skills/`. One AGENTS.md
   line makes it apply in every thread listed in `threads.json`.
 - **Indexing loop:** `index_bot.py` builds each section's brief and writes the prompt to a

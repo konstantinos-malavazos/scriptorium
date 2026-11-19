@@ -6,8 +6,10 @@ import re
 import pytest
 
 from core.brief import Position
-from core.cut import FALLBACK, build_cut, check_answer, citations, cut_dir, main, parse_position, position_line
+from core.cut import (FALLBACK, MORE_NOTE, build_cut, check_answer, citations, cut_dir, main, parse_position,
+                      position_line, read_cut)
 from core.extract import run
+from core.reader import move_to
 from core.split import load_approved
 from tests.index_fixture import StubWorker, fixture_split, write_split
 
@@ -226,3 +228,74 @@ def test_citations_are_parsed_as_section_and_scene():
     answer = f"{LINE}\nIlse [ch 3 · 1], Orrin [Cast], the glass [§12 · 3] and [ch 6 · x] [ch 6 ·2]."
     assert citations(answer) == [("ch 3", 1), ("Cast", None), ("§12", 3), ("ch 6 · x", None), ("ch 6 ·2", None)]
     assert citations(f"{LINE}\n{FALLBACK}") == []
+
+
+def test_read_cut_opens_with_the_position_line_and_keeps_only_what_matches(data):
+    move_to(data, BOOK, Position(3, 2))
+    out = read_cut(data, BOOK, ["who", "is", "Tamsin?", "quillfeather"])
+    assert out.splitlines()[0] == LINE
+    assert "## Tamsin Rook" in out and "## quillfeather" in out
+    for absent in ("## Corvin Ashby", "## Orrin Vale", "## brambleglass", "Corvin Ashby does the brambleglass work"):
+        assert absent not in out, absent
+    assert "- [ch 1 · 2] Tamsin Rook does the quillfeather work" in out
+
+
+def test_read_cut_always_holds_the_readers_own_section_up_to_the_scene(data):
+    move_to(data, BOOK, Position(3, 2))
+    out = read_cut(data, BOOK, [])
+    assert "## ch 3\n- [ch 3 · 1]" in out and "[ch 3 · 2]" in out and "[ch 3 · 3]" not in out
+    assert "  - Ilse Marrow meets the thornwick" in out
+    assert "## ch 1" not in out
+
+
+@pytest.mark.parametrize("section, held", [("ch 1", "## ch 1\n- [ch 1 · 1]"), ("Cast", "## Cast\n- [Cast]")])
+def test_read_cut_gives_a_named_section_whole(data, section, held):
+    move_to(data, BOOK, Position(3, 2))
+    out = read_cut(data, BOOK, [], section=section)
+    assert held in out
+    if section == "ch 1":
+        assert "[ch 1 · 2]" in out
+
+
+@pytest.mark.parametrize("section", ["ch 3", "ch 9"])
+def test_read_cut_refuses_a_section_not_in_the_cut_without_saying_why(data, section):
+    move_to(data, BOOK, Position(2, 1))
+    with pytest.raises(ValueError, match="is not in what you've read so far") as raised:
+        read_cut(data, BOOK, [], section=section)
+    assert "past" not in str(raised.value) and "unknown" not in str(raised.value)
+
+
+def test_read_cut_is_capped_at_its_budget(data):
+    move_to(data, BOOK, Position(3, 3))
+    full = read_cut(data, BOOK, ["nightfall", "Tamsin", "Ilse"])
+    assert MORE_NOTE not in full
+    out = read_cut(data, BOOK, ["nightfall", "Tamsin", "Ilse"], budget=len(full) // 2)
+    assert len(out) <= len(full) // 2 and out.endswith(MORE_NOTE)
+    assert out.splitlines()[0] == "Up to ch 3 · scene 3:"
+
+
+def test_read_cut_reads_only_the_cut(data):
+    move_to(data, BOOK, Position(3, 2))
+    for path in (data / BOOK / "sections").glob("*.json"):
+        path.write_text("{ corrupt", encoding="utf-8")
+    assert read_cut(data, BOOK, ["Tamsin"]).startswith(LINE)
+
+
+def test_read_cut_heals_a_cut_ahead_of_the_saved_position(data):
+    move_to(data, BOOK, Position(3, 2))
+    build_cut(data, BOOK, Position(3, 3))
+    out = read_cut(data, BOOK, ["thornwick"])
+    assert out.startswith(LINE) and "[ch 3 · 3]" not in out
+
+
+def test_read_cut_needs_a_saved_position(data):
+    with pytest.raises(ValueError, match="no position yet"):
+        read_cut(data, BOOK, ["Tamsin"])
+
+
+def test_every_citation_read_cut_returns_passes_the_check(data, approved):
+    move_to(data, BOOK, Position(3, 2))
+    out = read_cut(data, BOOK, ["Tamsin", "Orrin", "lanternwick", "Corvin", "Ilse"], section="ch 1")
+    tags = sorted(set(re.findall(r"\[[^\[\]]*\]", out)))
+    assert "[Cast]" in tags and "[ch 2 · 1]" in tags
+    assert check_answer(LINE + "\n" + " ".join(tags), approved, Position(3, 2)) == []

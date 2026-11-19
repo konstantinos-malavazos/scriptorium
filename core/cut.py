@@ -24,6 +24,7 @@ import re
 import shutil
 import sys
 import tempfile
+from collections.abc import Iterable
 from pathlib import Path
 
 from core.brief import CHAPTER0_LABEL, Position
@@ -40,6 +41,16 @@ _POSITION = (
     re.compile(r"(?P<label>.+?)/(?P<scene>\d+)"),
 )
 _CITATION = re.compile(r"\[([^\[\]]*)\]")
+_WORD = re.compile(r"[^\W_]+")
+_STOPWORDS = frozenset("""
+    the and for are but not you all any can had has her him his how its may our out she
+    was who why did does what when where which while with this that than then them they
+    there their these those from have into just like more most much only over some such
+    very were will would could should about after again also been before being both each
+    here other said says your whom whose
+""".split())
+READ_BUDGET = 12000
+MORE_NOTE = "(More matched than fits here; ask about something narrower.)"
 
 
 def cut_dir(data_dir: str | os.PathLike[str], book: str) -> Path:
@@ -196,6 +207,82 @@ def citations(answer: str) -> list[tuple[str, int | None]]:
         else:
             out.append((cited, None))
     return out
+
+
+def _content_words(text: str) -> set[str]:
+    """The distinct words of 3+ characters in `text`, casefolded, common function words left out."""
+    return {w for w in (m.casefold() for m in _WORD.findall(text)) if len(w) >= 3 and w not in _STOPWORDS}
+
+
+def _blocks(markdown: str) -> list[tuple[str, list[str]]]:
+    """(heading, entries) per `## ` block of a rendered cut file; an entry is a `- ` line
+    joined with the indented lines under it."""
+    blocks: list[tuple[str, list[str]]] = []
+    for line in markdown.splitlines():
+        if line.startswith("## "):
+            blocks.append((line[3:], []))
+        elif blocks and line.startswith("- "):
+            blocks[-1][1].append(line)
+        elif blocks and blocks[-1][1] and line.startswith("  "):
+            blocks[-1][1][-1] += "\n" + line
+    return blocks
+
+
+def read_cut(data_dir: str | os.PathLike[str], book: str, words: Iterable[str],
+             section: str | None = None, budget: int = READ_BUDGET) -> str:
+    """The parts of the reader's cut a question needs, as text; line 1 is the position line.
+
+    Heals the cut against the saved position first (core.reader.fresh_cut), then reads only
+    files inside cut/. Kept, in this order until `budget` characters: the timeline of the
+    reader's own section and of `section`, whole; every character and glossary block whose
+    heading holds a query word; every other timeline entry (scene line with its events)
+    holding one. Matching is case-insensitive on substrings. When something does not fit,
+    the text ends with MORE_NOTE. Raises ValueError with no saved position, or for a
+    `section` that is not in the cut (past the reader, or unknown: never said which).
+    """
+    from core.reader import fresh_cut  # core.reader imports this module
+
+    if fresh_cut(data_dir, book) is None:
+        raise ValueError("no position yet: say where you are in the book first")
+    cut = cut_dir(data_dir, book)
+    position = json.loads((cut / POSITION_FILE).read_text(encoding="utf-8"))
+    query = _content_words(" ".join(words))
+
+    def hit(text: str) -> bool:
+        folded = text.casefold()
+        return any(q in folded for q in query)
+
+    timeline = _blocks((cut / "timeline.md").read_text(encoding="utf-8"))
+    whole = {position["label"]}
+    if section is not None:
+        section = section.strip()
+        if not any(section == heading or section in heading.split(", ") for heading, _ in timeline):
+            raise ValueError(f"{section!r} is not in what you've read so far")
+        whole.add(section)
+
+    def is_whole(heading: str) -> bool:
+        return heading in whole or any(label in whole for label in heading.split(", "))
+
+    groups: list[tuple[str, list[str]]] = [
+        ("# Timeline (whole sections)", [f"## {h}\n" + "\n".join(e) for h, e in timeline if is_whole(h)])]
+    for title, name in (("# Characters", "characters.md"), ("# Glossary", "glossary.md")):
+        blocks = _blocks((cut / name).read_text(encoding="utf-8"))
+        groups.append((title, [f"## {h}\n" + "\n".join(e) for h, e in blocks if hit(h)]))
+    groups.append(("# Timeline (matching scenes)", [
+        f"## {h}\n" + "\n".join(hits) for h, e in timeline
+        if not is_whole(h) and (hits := [x for x in e if hit(x)])]))
+
+    out = position["line"]
+    room = budget - len(MORE_NOTE) - 2
+    for title, blocks in groups:
+        if not blocks:
+            continue
+        for i, block in enumerate(blocks):
+            piece = ("\n\n" + title if i == 0 else "") + "\n\n" + block
+            if len(out) + len(piece) > room:
+                return out + "\n\n" + MORE_NOTE
+            out += piece
+    return out + "\n"
 
 
 def _build(book: str, position: str, data_dir: Path) -> int:

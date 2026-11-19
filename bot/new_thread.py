@@ -16,6 +16,10 @@ from core.extract import _write_text
 from core.split import _valid_book
 
 THREADS_FILE = "threads.json"  # beside the per-book folders: {thread id: book}
+UNKNOWN_BOOK_LINE = "I can't tell which book this thread is for."
+# The only output on which bot/SKILL.md carries on as usual, and only with exit 2: an exit 2
+# from the shell or a parser prints no such line, so it fails closed.
+NOT_A_BOOK_THREAD_LINE = "not a book thread"
 
 
 def book_name(name: str) -> str:
@@ -40,6 +44,31 @@ def read_threads(data_dir: str | os.PathLike[str]) -> dict[str, str]:
 def thread_for(data_dir: str | os.PathLike[str], book: str) -> str | None:
     """The thread recorded for this book, or None."""
     return next((tid for tid, b in read_threads(data_dir).items() if b == book), None)
+
+
+def book_for_name(data_dir: str | os.PathLike[str], name: str) -> str | None:
+    """The recorded book whose thread name, recomputed from its saved EPUB, is `name`; or None."""
+    for book in dict.fromkeys(read_threads(data_dir).values()):
+        epub = Path(data_dir) / book / f"{book}.epub"
+        if not epub.exists():
+            continue
+        meta = read_epub(epub)
+        if thread_name(meta.title, meta.author, book) == name.strip():
+            return book
+    return None
+
+
+def book_thread(data_dir: str | os.PathLike[str], thread: str | None = None,
+                name: str | None = None) -> str | None:
+    """The recorded thread id for a message's thread: its id when threads.json holds it, else
+    the id recorded for the book its name matches, else None. Never writes threads.json."""
+    if thread is not None and thread in read_threads(data_dir):
+        return thread
+    if name:
+        book = book_for_name(data_dir, name)
+        if book is not None:
+            return thread_for(data_dir, book)
+    return None
 
 
 def _find_by_name(name: str) -> str:
