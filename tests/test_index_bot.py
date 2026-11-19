@@ -8,10 +8,12 @@ from pathlib import Path
 import pytest
 
 from bot import index_bot, openclaw
+from bot.discuss import BROKEN_LINE, USAGE_LINE
 from bot.index_bot import DONE_LINE
+from bot.new_thread import NOT_A_BOOK_THREAD_LINE, UNKNOWN_BOOK_LINE
 from core.extract import INSTRUCTIONS, Step, next_step, slots
 from core.split import load_approved
-from tests.epub_fixture import divider_book, toc_book
+from tests.epub_fixture import divider_book, toc_book, write_epub
 from tests.index_fixture import StubWorker, fixture_split, valid_reply, write_split
 
 BOOK = "fx"
@@ -127,7 +129,7 @@ def test_run_posts_progress_per_section_and_ends_ready(data, monkeypatch):
     assert stub.posts == ["chapter 0 done",
                           *(f"{label} done ({i}/{len(labels)})" for i, label in enumerate(labels, 1)),
                           DONE_LINE]
-    assert DONE_LINE == "Ready. Where are you? Give a section and scene."
+    assert DONE_LINE == "Ready. Where are you? Name the section as the book prints it, and the scene if you know it."
     assert status(data)["state"] == "ready"
     assert sorted(p.name for p in sections(data).glob("*.json")) == ["s00.json", "s01.json", "s02.json", "s03.json"]
 
@@ -474,5 +476,69 @@ def test_status_ready(data, capsys):
     assert ask(data, capsys) == (0, "ready")
 
 
-def test_status_of_an_unknown_thread_is_an_error(data, capsys):
+def test_status_of_an_unknown_thread_is_not_a_book_thread(data, capsys):
     assert index_bot.main(["status", "--thread", "999", "--data-dir", str(data)]) == 2
+    assert capsys.readouterr() == (NOT_A_BOOK_THREAD_LINE + "\n", "")
+
+
+def status_by(data, capsys, *flags):
+    code = index_bot.main(["status", *flags, "--data-dir", str(data)])
+    return code, capsys.readouterr().out.strip()
+
+
+def test_status_places_a_thread_by_name_when_its_id_is_not_recorded(data, capsys):
+    write_epub(data / BOOK / f"{BOOK}.epub", [("a.xhtml", "<p>x</p>")], title="Fx Book", authors=["Some Writer"])
+    write_status(data, state="ready", pid=dead_pid())
+    assert status_by(data, capsys, "--thread", "999", "--thread-name", "Fx Book — Some Writer") == (0, "ready")
+    assert status_by(data, capsys, "--thread-name", "Fx Book — Some Writer") == (0, "ready")
+    assert json.loads((data / "threads.json").read_text(encoding="utf-8")) == {THREAD: BOOK}
+
+
+def test_an_unplaced_thread_under_the_books_channel_gets_the_refusal_line(data, capsys):
+    write_status(data, state="ready", pid=dead_pid())
+    assert status_by(data, capsys, "--thread", "999", "--thread-name", "Some Other Book",
+                     "--parent", openclaw.BOOKS_CHANNEL_ID) == (0, UNKNOWN_BOOK_LINE)
+    assert UNKNOWN_BOOK_LINE == "I can't tell which book this thread is for."
+
+
+@pytest.mark.parametrize("parent", [[], ["--parent", "123"]])
+def test_an_unplaced_thread_elsewhere_is_not_a_book_thread(data, capsys, parent):
+    assert status_by(data, capsys, "--thread", "999", "--thread-name", "Some Other Book", *parent) == (
+        2, NOT_A_BOOK_THREAD_LINE)
+
+
+def test_status_with_only_the_books_channel_gets_the_refusal_line(data, capsys):
+    assert status_by(data, capsys, "--parent", openclaw.BOOKS_CHANNEL_ID) == (0, UNKNOWN_BOOK_LINE)
+    assert status_by(data, capsys, "--parent", "123") == (2, NOT_A_BOOK_THREAD_LINE)
+    assert status_by(data, capsys) == (2, NOT_A_BOOK_THREAD_LINE)
+
+
+def test_a_status_file_that_will_not_parse_gives_the_broken_line(data, capsys):
+    (data / BOOK / "status.json").write_text("{", encoding="utf-8")
+    assert ask(data, capsys) == (3, BROKEN_LINE)
+
+
+def test_an_unreadable_epub_gives_the_broken_line_when_placing_by_name(data, capsys):
+    (data / BOOK / f"{BOOK}.epub").write_bytes(b"not a zip")
+    assert status_by(data, capsys, "--thread", "999", "--thread-name", "Fx Book — Some Writer") == (3, BROKEN_LINE)
+
+
+@pytest.mark.parametrize("argv", [
+    pytest.param(["--thread", "1", "--parent", "{books}"], id="no --data-dir"),
+    pytest.param(["--thread", "--parent", "{books}", "--data-dir", "{data}"], id="an empty id slot"),
+    pytest.param(["--thread", "1", "--bogus", "--data-dir", "{data}"], id="an unknown flag"),
+    pytest.param(["--thread", "1", "--help", "--data-dir", "{data}"], id="help"),
+    pytest.param(["--thread", "1", "--data-dir", "~nosuchuser-scriptorium/x"], id="an unknown user's home"),
+])
+def test_a_status_usage_slip_answers_nothing_and_never_exits_2(data, argv):
+    argv = [a.format(books=openclaw.BOOKS_CHANNEL_ID, data=data) for a in argv]
+    done = subprocess.run([sys.executable, "-m", "bot.index_bot", "status", *argv], cwd=REPO, capture_output=True,
+                          text=True, timeout=60)
+    assert (done.returncode, done.stdout) == (3, USAGE_LINE + "\n")
+    assert done.stderr and "Traceback" not in done.stderr
+
+
+def test_status_as_a_process_exits_2_only_with_the_marker(data):
+    done = subprocess.run([sys.executable, "-m", "bot.index_bot", "status", "--thread", "999", "--parent", "123",
+                           "--data-dir", str(data)], cwd=REPO, capture_output=True, text=True, timeout=60)
+    assert (done.returncode, done.stdout, done.stderr) == (2, NOT_A_BOOK_THREAD_LINE + "\n", "")

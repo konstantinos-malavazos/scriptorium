@@ -3,7 +3,7 @@ import json
 import pytest
 
 from bot import new_thread, openclaw
-from bot.new_thread import book_name, open_thread, thread_for, thread_name
+from bot.new_thread import book_for_name, book_name, book_thread, open_thread, thread_for, thread_name
 from tests.epub_fixture import write_epub
 
 BOOK = "hive"
@@ -118,3 +118,24 @@ def test_cli_prints_the_thread_id(data, monkeypatch, capsys):
     fake(monkeypatch)
     assert new_thread.main([BOOK, "--data-dir", str(data)]) == 0
     assert capsys.readouterr().out == "900\n"
+
+
+def test_book_for_name_matches_the_name_recomputed_from_each_saved_epub(data):
+    (data / "threads.json").write_text(json.dumps({"111": "dune", "900": BOOK}), encoding="utf-8")
+    before = (data / "threads.json").read_bytes()
+    assert book_for_name(data, NAME) == BOOK
+    assert book_for_name(data, f"  {NAME} ") == BOOK
+    assert book_for_name(data, "Hive") is None
+    assert book_for_name(data, "dune") is None  # dune has no saved EPUB: skipped, never guessed
+    assert (data / "threads.json").read_bytes() == before
+
+
+def test_book_thread_tries_the_id_then_the_name(data):
+    (data / "threads.json").write_text(json.dumps({"900": BOOK}), encoding="utf-8")
+    assert book_thread(data, "900") == "900"
+    assert book_thread(data, "900", "Something else") == "900"
+    assert book_thread(data, "123", NAME) == "900"
+    assert book_thread(data, None, NAME) == "900"
+    assert book_thread(data, "123", "Something else") is None
+    assert book_thread(data, "123") is None
+    assert book_thread(data) is None

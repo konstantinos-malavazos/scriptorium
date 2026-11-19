@@ -2,11 +2,14 @@
 
     python3 -m bot.index_bot start <book> [<epub>] --data-dir ~/.openclaw/scriptorium
     python3 -m bot.index_bot run <book> --data-dir ...      (launched by start, detached)
-    python3 -m bot.index_bot status --thread <id> --data-dir ...
+    python3 -m bot.index_bot status [--thread <id>] [--thread-name <name>] [--parent <channel id>] --data-dir ...
 
-start and status each print one line for the agent to relay as it stands.
+start and status each print one line for the agent to relay as it stands. status exits 2, with
+NOT_A_BOOK_THREAD_LINE on stdout, when the thread is not a book thread; one under the books
+channel that it cannot place gets UNKNOWN_BOOK_LINE instead, even with no thread id or name. An
+index it cannot read gets BROKEN_LINE and exit 3; a mistyped command or --help gets USAGE_LINE
+and exit 3.
 """
-import argparse
 import json
 import os
 import shutil
@@ -16,12 +19,13 @@ import tempfile
 from pathlib import Path
 
 from bot import openclaw
-from bot.new_thread import book_name, open_thread, read_threads, thread_for
+from bot.discuss import BROKEN_LINE, USAGE_LINE, FailClosedParser, UsageError, data_dir
+from bot.new_thread import NOT_A_BOOK_THREAD_LINE, UNKNOWN_BOOK_LINE, book_name, book_thread, open_thread, read_threads, thread_for
 from core.extract import INSTRUCTIONS, Outcome, _write_text, next_step, slots, submit
 from core.split import SplitNotApproved, load_approved
 from core.validate import parse_reply
 
-DONE_LINE = "Ready. Where are you? Give a section and scene."
+DONE_LINE = "Ready. Where are you? Name the section as the book prints it, and the scene if you know it."
 STATUS_FILE = "status.json"
 # One section's reply is a long structured index; OpenClaw's 600 s default can cut it off mid-reply.
 AGENT_TIMEOUT_S = 1800
@@ -244,9 +248,9 @@ def status_line(data_dir: Path, thread: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python3 -m bot.index_bot", description="Index a book for the bot.")
+    parser = FailClosedParser(prog="python3 -m bot.index_bot", description="Index a book for the bot.")
     sub = parser.add_subparsers(dest="command", required=True)
-    data_arg = {"required": True, "type": lambda p: Path(p).expanduser(), "help": "parent of the per-book folders"}
+    data_arg = {"required": True, "type": data_dir, "help": "parent of the per-book folders"}
     p_start = sub.add_parser("start", help="copy the EPUB, open the thread, split, launch the loop")
     p_start.add_argument("book", type=book_name)
     p_start.add_argument("epub", nargs="?", type=Path, help="the attached EPUB; omit to resume from the saved copy")
@@ -255,17 +259,34 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("book", type=book_name)
     p_run.add_argument("--data-dir", **data_arg)
     p_status = sub.add_parser("status", help="the line to reply in a book thread")
-    p_status.add_argument("--thread", required=True)
+    p_status.add_argument("--thread", help="the thread's id")
+    p_status.add_argument("--thread-name", help="the thread's name, tried when the id is not recorded")
+    p_status.add_argument("--parent", help="the id of the channel the thread sits under")
     p_status.add_argument("--data-dir", **data_arg)
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except UsageError as e:
+        print(e, file=sys.stderr)
+        print(USAGE_LINE)
+        return 3
     if args.command == "run":
         return run(args.data_dir, args.book)
     if args.command == "status":
+        # Exit 2 only with NOT_A_BOOK_THREAD_LINE: the skill answers freely on that and nothing else.
         try:
-            print(status_line(args.data_dir, args.thread))
-        except LookupError as e:
-            print(e, file=sys.stderr)
-            return 2
+            thread = book_thread(args.data_dir, args.thread, args.thread_name)
+            if thread is None:
+                if args.parent == openclaw.BOOKS_CHANNEL_ID:
+                    print(UNKNOWN_BOOK_LINE)
+                    return 0
+                print(NOT_A_BOOK_THREAD_LINE)
+                return 2
+            line = status_line(args.data_dir, thread)
+        except Exception as e:
+            print(f"bot.index_bot status: {type(e).__name__}: {e}", file=sys.stderr)
+            print(BROKEN_LINE)
+            return 3
+        print(line)
         return 0
     code, line = start(args.data_dir, args.book, args.epub)
     print(line)
