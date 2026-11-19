@@ -1,0 +1,1 @@
+../../../prompts/skills/evaluate-bot/SKILL.md
