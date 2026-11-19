@@ -39,9 +39,10 @@ in square brackets. Ignore both: code checks them, not you.
 and states nothing that `expected` or `quote` contradicts. `expected` often packs in
 secondary detail (a number, a place, a date); leaving that detail out does not make the
 answer wrong. Wording does not matter, and extra facts that agree with `expected` and
-`quote` do not make it wrong. Otherwise `wrong`: the answer misses or gets wrong the main
-fact, contradicts `expected` or `quote`, or says the reader has not got that far when they
-have.
+`quote` do not make it wrong. A character may be named by given name, family name or
+both; those name one person and do not contradict `expected`. Otherwise `wrong`: the answer
+misses or gets wrong the main fact, contradicts `expected` or `quote`, or says the reader
+has not got that far when they have.
 
 Give a verdict for a trap too, by the same rule.
 

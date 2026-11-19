@@ -81,7 +81,9 @@ Each question is an object with exactly these keys:
 - `position`: where the reader is, written as a story heading's label and scene,
   `<label> · scene <k>`, e.g. `ch 4 · scene 2`. A chapter-0 label is never a position.
 - `question`: what the reader asks, in a reader's words.
-- `expected`: the right answer at the position, short.
+- `expected`: the right answer at the position, short. Name each character by the full
+  name the book has given by that position; an `alias` question's `hidden` name is the
+  exception, below.
 - `quote`: one contiguous stretch copied verbatim from the book, at or before the position,
   that shows the fact the expected answer rests on. No ellipsis and nothing left out. The
   check ignores differences in spacing, line breaks and straight or curly quote marks; it

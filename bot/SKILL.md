@@ -119,7 +119,8 @@ if you lose track of a question you asked the reader, ask it again.
 
 1. Run `read` with the question's key words, all in one pair of single quotes: names,
    places, things, a few words at most. Add `--section '<section>'` when the question names
-   one (after `place` said `ok`).
+   one (after `place` said `ok`). An apostrophe in the key words is written `'\''` here too,
+   also when you build the command in code: `read 'the captain'\''s log'`.
 
    ```
    cd ~/.openclaw/tools/scriptorium && python3 -m bot.discuss read '<key words>' --thread <this thread's id> --thread-name '<this thread's name>' --parent <the parent channel's id> --data-dir ~/.openclaw/scriptorium
@@ -130,8 +131,14 @@ if you lose track of a question you asked the reader, ask it again.
    - line 1 is exactly the first line `read` printed, for example `Up to ch 6 · scene 3:`;
    - every fact carries a citation copied from the output, in square brackets, for example
      `[ch 2 · 3]` or a chapter-0 label such as `[Cast]`;
-   - if the output does not hold the answer, the whole answer after line 1 is exactly
-     `That's not in what you've read so far.`
+   - answer from whatever the output holds that bears on the question, even when it is only
+     part of what was asked, and stop after what you can cite: say nothing about what is
+     missing, no sentence that a name, a reason or anything else isn't given or isn't there;
+   - only when the output holds nothing on the question, the whole answer after line 1 is
+     exactly `That's not in what you've read so far.` Never reword that line (no "isn't
+     named", "not yet" or "so far" of your own) and never hint that something comes later;
+   - write "the book hasn't said" only as a cited sentence, when a line of the output itself
+     shows the thing is unknown.
 3. Check it before posting, with the answer on stdin:
 
    ```
@@ -141,7 +148,9 @@ if you lose track of a question you asked the reader, ask it again.
    ```
 
 4. Exit 0: post the answer exactly as checked. Exit 1: rewrite it once, fixing every error
-   it printed, and check again. If the second try also fails, post nothing of it; reply
+   it printed, and check again. `check` rejects the fallback's words ("so far", "what
+   you've read", "not yet", "isn't named", "not named") anywhere but in the exact fallback.
+   If the second try also fails, post nothing of it; reply
    "I couldn't write an answer that passed the spoiler check. Ask again to try afresh."
    Exit 3: reply with the last line it printed.
 

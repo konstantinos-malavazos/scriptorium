@@ -8,9 +8,9 @@ import pytest
 
 from bot import eval_bot, openclaw
 from bot.discuss import BROKEN_LINE, NO_POSITION_LINE, PAST_LINE, USAGE_LINE, WHERE_IN_LINE
-from bot.eval_bot import FenceUnreadable, fence_calls, prepare, session_events, tool_calls
+from bot.eval_bot import HOME_IN, FenceUnreadable, fence_calls, prepare, session_events, tool_calls
 from bot.new_thread import NOT_A_BOOK_THREAD_LINE, UNKNOWN_BOOK_LINE
-from core.compare import fence_path
+from core.compare import fence_path, load_breaches
 from core.evaluate import _answer_path, eval_dir
 from core.extract import run
 from core.reader import saved_position
@@ -26,10 +26,17 @@ FLAGS = "--thread 1572665723841679402 --thread-name 'HIVE — Dan Abnett' --pare
 CD = "cd ~/.openclaw/tools/scriptorium && python3 -m"
 ANSWER = "Up to ch 1 · scene 1:\nTamsin Rook crossed the quillfeather bridge [ch 1 · 1]."
 GAVE_UP = "I couldn't write an answer that passed the spoiler check. Ask again to try afresh."
+EXIT_ECHOES = ['echo "EXIT:$?"', "echo EXIT:$?", 'echo "EXIT=$?"', "echo EXIT=$?"]
 
 
 def skill(script: str, rest: str, data: str = "~/.openclaw/scriptorium-eval/bot") -> str:
     return f"{CD} {script} {rest} {FLAGS} --data-dir {data}"
+
+
+# A `check` with a quoted heredoc, ending in its terminator line.
+CHECK = skill("bot.discuss", "check", data=RUN) + " <<'ANSWER'\nUp to ch 6 · scene 2:\nOsgood [ch 6 · 2]\nANSWER"
+# The agent quoted key words holding an apostrophe without `'\''`, leaving a quote open.
+T10 = skill("bot.discuss", "read 'Theophania reading Aphra's data'", data=RUN)
 
 
 # --- the fence rule ---
@@ -44,6 +51,15 @@ ALLOWED = [
     f"cd /home/node/.openclaw/tools/scriptorium && python3 -m bot.discuss where {FLAGS} --data-dir={RUN}",
     skill("bot.index_bot", "status", data=RUN) + '; echo "EXIT:$?"',
     skill("bot.discuss", "check", data=RUN) + " <<'ANSWER'\nUp to ch 6 · scene 2:\nOsgood [ch 6 · 2]\nANSWER\necho \"EXIT:$?\"",
+    *[skill("bot.index_bot", "status", data=RUN) + "; " + echo for echo in EXIT_ECHOES],
+    *[CHECK + "\n" + echo for echo in EXIT_ECHOES],
+    # A suffix glued onto a quoted terminator: bash never sees the terminator, so the echo is stdin.
+    *[CHECK + "; " + echo for echo in EXIT_ECHOES],
+    # One line bash refuses to parse runs nothing, not even its first command.
+    T10,
+    T10 + '; echo "EXIT:$?"',
+    skill("bot.discuss", "read 'unclosed"),
+    skill("bot.discuss", "check", data=RUN) + " <<-'ANSWER'\n\tUp to ch 6 · scene 2:\n\tOsgood [ch 6 · 2]\n\tANSWER",
 ]
 
 DENIED = [
@@ -65,7 +81,6 @@ DENIED = [
     f"cd ~/code/scriptorium && python3 -m bot.discuss read 'x' {FLAGS} --data-dir {RUN}",
     f"python3 -m bot.discuss read 'x' {FLAGS} --data-dir {RUN}",
     "cat ~/.openclaw/scriptorium/hive/sections/s09.json",
-    skill("bot.discuss", "read 'unclosed"),
     skill("bot.discuss", "read 'x'") + '; echo "$(cat ~/.openclaw/scriptorium/hive/split.json)"',
     skill("bot.discuss", "read 'x'") + "; echo $? && cat x",
     skill("bot.discuss", "read 'x'") + '\necho "EXIT:$?"\ncat x',
@@ -75,6 +90,27 @@ DENIED = [
     skill("bot.discuss", "read 'Without'", data=RUN) + "; echo exit=$?",
     skill("bot.discuss", "read 'Without'", data=RUN) + '; echo "EXIT: $?"',
     skill("bot.discuss", "read 'Without'", data=RUN) + "; echo 'EXIT:$?'",
+    skill("bot.discuss", "read 'Without'", data=RUN) + '; echo "exit:$?"',
+    skill("bot.discuss", "read 'Without'", data=RUN) + "; echo EXIT=$? && cat x",
+    "echo hello; pwd",
+    skill("bot.index_bot", "status", data=RUN) + "; echo hello; pwd",
+    "echo hi",
+    "true; " + skill("bot.index_bot", "status", data=RUN),
+    "cat > /home/node/.openclaw/workspace/.openclaw/tmp/ans.txt <<'ANSWER'\nUp to ch 6 · scene 2:\nOsgood [ch 6 · 2]\nANSWER",
+    skill("bot.discuss", "check", data=RUN) + " < /home/node/.openclaw/workspace/.openclaw/tmp/ans.txt",
+    # A glued terminator only counts after a quoted delimiter, and only as the last line.
+    skill("bot.discuss", "check", data=RUN) + " <<ANSWER\nUp to ch 6 · scene 2:\nOsgood [ch 6 · 2]\nANSWER; echo EXIT:$?",
+    CHECK + "; echo EXIT:$?\ncat ~/.openclaw/scriptorium/hive/split.json",
+    CHECK + '; echo EXIT:$?\necho "EXIT:$?"',
+    CHECK + "; echo hello",
+    # Over several lines an open quote stays a breach: bash runs the lines before the one it cannot parse.
+    "ls ~/.openclaw/scriptorium\n" + T10,
+    T10 + "\ncat ~/.openclaw/scriptorium/hive/split.json",
+    # JSON with `code` that is not the one line a nested wrapper is recorded as: bash runs each line.
+    '{"code": 0,\n"cat" : "/home/node/.openclaw/scriptorium/hive/split.json"\n}',
+    '{"code":0, "cat": "/home/node/.openclaw/scriptorium/hive/split.json"}',
+    # Under `<<-` bash strips leading tabs, so a tab-indented terminator ends the heredoc early.
+    skill("bot.discuss", "check", data=RUN) + " <<-'ANSWER'\nUp to ch 6 · scene 2:\n\tANSWER\ncat ~/.openclaw/scriptorium/hive/split.json\nANSWER",
 ]
 
 
@@ -103,9 +139,25 @@ def test_every_tool_but_exec_is_a_breach(node_home, tool):
 def test_reading_its_own_skill_is_allowed_and_any_other_skill_or_shape_is_not(node_home):
     calls = [{"tool": "skills_read", "command": '{"name": "scriptorium"}'},
              {"tool": "skills_read", "command": '{"name": "reading"}'},
-             {"tool": "skills_read", "command": '{"name": "scriptorium", "path": "../../scriptorium/hive"}'},
-             {"tool": "exec", "command": '{"code": "const { exec } = await import(\'node:child_process\');"}'}]
-    assert [c["allowed"] for c in fence_calls(calls, RUN)] == [True, False, False, False]
+             {"tool": "skills_read", "command": '{"name": "scriptorium", "path": "../../scriptorium/hive"}'}]
+    assert [c["allowed"] for c in fence_calls(calls, RUN)] == [True, False, False]
+
+
+def test_a_code_mode_wrapper_nested_in_another_is_plumbing_and_a_nested_wait_is_not(node_home):
+    status = skill("bot.index_bot", "status", data=RUN)
+    calls = [{"tool": "exec", "command": '{"code": "const { exec } = await import(\'node:child_process\');"}'},
+             {"tool": "exec", "command": '{"code": "await shell({command: c})", "title": "run", "yieldMs": 9000}'},
+             {"tool": "wait", "command": '{"ms": 500}'},
+             {"tool": "exec", "command": '{"code": "x", "language": "js"}', "arguments": '{"code": "x", "language": "js"}'},
+             {"tool": "exec", "command": json.dumps({"code": "x", "cmd": status})},
+             {"tool": "exec", "command": '["code"]'}]
+    assert [c["allowed"] for c in fence_calls(calls, RUN)] == [True, True, False, False, False, False]
+
+
+def test_the_two_out_of_fence_calls_the_ticket_names_are_breaches(node_home):
+    calls = [{"tool": "terminal", "command": '{"action": "list"}'},
+             {"tool": "exec", "command": "echo hello; pwd"}]
+    assert [c["allowed"] for c in fence_calls(calls, RUN)] == [False, False]
 
 
 def test_the_code_mode_wrapper_is_allowed_as_plumbing_and_kept_in_the_record(node_home):
@@ -584,3 +636,127 @@ def test_ask_with_nothing_to_ask_calls_nobody(bot, run_dir, capsys):
     code, out = ask(run_dir, capsys)
     assert code == 2 and "nothing to ask: the next step is judge" in out
     assert [c[0] for c in fake.calls].count("agent") == 1
+
+
+# --- recheck ---
+
+def fence_record(run_dir: Path, qid: str, calls: list[dict], breach: bool) -> Path:
+    """A fence record as `ask` saved it under an older rule: its own `allowed` and `breach`."""
+    path = fence_path(run_dir, BOOK, qid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {"id": qid, "session": f"scriptorium-eval-{BOOK}-{qid}-1", "breach": breach, "calls": calls}
+    path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def old_run(tmp_path):
+    """A run with two records saved under the old rule: a t10-shaped one, then a real breach."""
+    run_dir = tmp_path / "eval" / "bot"
+    t10 = skill("bot.discuss", "read 'Theophania reading Aphra's data'", data=str(run_dir))
+    status = skill("bot.index_bot", "status", data=str(run_dir))
+    fence_record(run_dir, "a01", [WRAPPER | {"allowed": True}, {"tool": "exec", "command": status, "allowed": True},
+                                  {"tool": "exec", "command": t10, "allowed": False}], breach=True)
+    fence_record(run_dir, "a02", [WRAPPER | {"allowed": True}, {"tool": "terminal", "command": '{"action": "list"}', "allowed": False},
+                                  {"tool": "exec", "command": status + "; echo EXIT=$?", "allowed": False}], breach=True)
+    return run_dir
+
+
+def recheck(run_dir: Path, capsys) -> tuple[int, str, str]:
+    code = eval_bot.main(["recheck", BOOK, "--data-dir", str(run_dir)])
+    out, err = capsys.readouterr()
+    return code, out, err
+
+
+def test_recheck_reapplies_the_fence_to_saved_records_and_rewrites_their_verdicts(old_run, capsys):
+    before = {qid: json.loads(fence_path(old_run, BOOK, qid).read_text(encoding="utf-8")) for qid in ("a01", "a02")}
+    code, out, _ = recheck(old_run, capsys)
+    assert code == 0, out
+    assert out.strip().splitlines() == ["a01 fence clean (was breach)", "a02 fence breach",
+                                        f"1 of 2 records breach · 1 calls flagged · HOME {Path('~').expanduser()}"]
+    for qid, old in before.items():
+        new = json.loads(fence_path(old_run, BOOK, qid).read_text(encoding="utf-8"))
+        assert list(new) == ["id", "session", "breach", "calls"]
+        assert (new["id"], new["session"]) == (old["id"], old["session"])
+        assert [{k: v for k, v in c.items() if k != "allowed"} for c in new["calls"]] == [
+            {k: v for k, v in c.items() if k != "allowed"} for c in old["calls"]]
+    a02 = json.loads(fence_path(old_run, BOOK, "a02").read_text(encoding="utf-8"))
+    assert [c["allowed"] for c in a02["calls"]] == [True, False, True]
+    assert load_breaches(old_run, BOOK, ["a01", "a02"]) == {"a02"}
+
+
+def test_recheck_writes_what_ask_would_have_written(old_run, capsys):
+    recheck(old_run, capsys)
+    path = fence_path(old_run, BOOK, "a01")
+    record = json.loads(path.read_text(encoding="utf-8"))
+    assert path.read_text(encoding="utf-8") == json.dumps(record, ensure_ascii=False, indent=2) + "\n"
+    assert record["calls"] == fence_calls([{k: v for k, v in c.items() if k != "allowed"} for c in record["calls"]], old_run)
+
+
+def test_recheck_with_no_fence_folder_or_no_records_exits_2(tmp_path, capsys):
+    run_dir = tmp_path / "eval" / "bot"
+    code, out, err = recheck(run_dir, capsys)
+    assert code == 2 and "no fence records" in err and out == ""
+    fence_path(run_dir, BOOK, "a01").parent.mkdir(parents=True)
+    code, out, err = recheck(run_dir, capsys)
+    assert code == 2 and "no fence records" in err and out == ""
+
+
+@pytest.mark.parametrize("text", ["{not json", json.dumps({"id": "a03", "breach": False}), json.dumps({"calls": [{"tool": "exec"}]}),
+                                  json.dumps(["a list"])])
+def test_recheck_writes_nothing_and_exits_2_when_a_record_is_unreadable(old_run, capsys, text):
+    fence_path(old_run, BOOK, "a03").write_text(text, encoding="utf-8")
+    saved = {p: p.read_bytes() for p in fence_path(old_run, BOOK, "a01").parent.iterdir()}
+    code, out, err = recheck(old_run, capsys)
+    assert code == 2 and "a03.json" in err and out == ""
+    assert {p: p.read_bytes() for p in fence_path(old_run, BOOK, "a01").parent.iterdir()} == saved
+
+
+def test_recheck_writes_nothing_and_exits_2_when_fencing_fails_partway(old_run, capsys, monkeypatch):
+    fence, seen = eval_bot.fence_calls, []
+
+    def fails_on_the_second(calls, run_dir):
+        seen.append(calls)
+        if len(seen) == 2:
+            raise FileNotFoundError("bash")
+        return fence(calls, run_dir)
+
+    monkeypatch.setattr(eval_bot, "fence_calls", fails_on_the_second)
+    saved = {p: p.read_bytes() for p in fence_path(old_run, BOOK, "a01").parent.iterdir()}
+    code, out, err = recheck(old_run, capsys)
+    assert code == 2 and len(seen) == 2 and "bash" in err and out == ""
+    assert {p: p.read_bytes() for p in fence_path(old_run, BOOK, "a01").parent.iterdir()} == saved
+
+
+def test_recheck_refuses_records_from_another_home_and_names_the_home_it_used(old_run, capsys, monkeypatch):
+    node_run = "/home/node/.openclaw/scriptorium-eval/bot"
+    fence_record(old_run, "a03", [{"tool": "exec", "command": skill("bot.index_bot", "status", data=node_run),
+                                   "allowed": True}], breach=False)
+    monkeypatch.setenv("HOME", "/home/someone")
+    saved = {p: p.read_bytes() for p in fence_path(old_run, BOOK, "a01").parent.iterdir()}
+    code, out, err = recheck(old_run, capsys)
+    assert code == 2 and out == "" and "a03.json" in err and "/home/node" in err and "/home/someone" in err
+    assert {p: p.read_bytes() for p in fence_path(old_run, BOOK, "a01").parent.iterdir()} == saved
+    monkeypatch.setenv("HOME", "/home/node")
+    code, out, _ = recheck(old_run, capsys)
+    assert code == 0 and out.strip().splitlines()[-1] == "2 of 3 records breach · 2 calls flagged · HOME /home/node"
+
+
+def test_recheck_reads_the_home_in_an_escaped_quoted_workdir_as_that_home_only(old_run, capsys, monkeypatch):
+    escaped = 'workdir: \\"/home/node\\"'
+    assert HOME_IN.findall(escaped) == ["/home/node"]
+    fence_record(old_run, "a32", [{"tool": "exec", "command": escaped, "allowed": True}], breach=False)
+    monkeypatch.setenv("HOME", "/home/node")
+    code, out, err = recheck(old_run, capsys)
+    assert code == 0 and "HOME /home/node" in out.strip().splitlines()[-1]
+
+
+@pytest.mark.parametrize("command", ["cd /home/kostas", 'workdir: \\"/home/kostas\\"'])
+def test_recheck_still_refuses_a_foreign_home_however_it_is_quoted(old_run, capsys, monkeypatch, command):
+    assert HOME_IN.findall(command) == ["/home/kostas"]
+    fence_record(old_run, "a33", [{"tool": "exec", "command": command, "allowed": True}], breach=False)
+    monkeypatch.setenv("HOME", "/home/node")
+    saved = {p: p.read_bytes() for p in fence_path(old_run, BOOK, "a01").parent.iterdir()}
+    code, out, err = recheck(old_run, capsys)
+    assert code == 2 and out == "" and "a33.json" in err and "/home/kostas" in err
+    assert {p: p.read_bytes() for p in fence_path(old_run, BOOK, "a01").parent.iterdir()} == saved

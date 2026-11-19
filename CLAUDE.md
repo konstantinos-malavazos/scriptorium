@@ -61,5 +61,23 @@ Run from the repo root; each is green on exit 0.
   - `bot` — the OpenClaw side: `bot/SKILL.md`, `index_bot.py`, `new_thread.py`.
 - The evaluator has no layer of its own: its code is in `core`, its agents in `prompts`.
 
+## Testing seams
+- **Environment:** local only: the host, the container `openclaw-openclaw-gateway-1`, and the
+  `~/.openclaw` data. There is no staging tier. The container mounts `~/code` at `/home/node/code`
+  and `~/.openclaw` at `/home/node/.openclaw`, and its HOME is `/home/node`.
+- **Recipe key:** `bot-eval:<scenario>`, e.g. `bot-eval:recheck`, `bot-eval:rescore`.
+- **Flow source:** `bot/eval_bot.py`, `core/evaluate.py`, `core/compare.py`. The fingerprint is
+  the `git hash-object` of each.
+- **Produce driver:** run the branch's own code inside the container. The pinned clone tracks
+  `main`, so it would test the wrong code:
+  `docker exec -e OPENCLAW_SHELL=exec -w /home/node/code/scriptorium openclaw-openclaw-gateway-1 python3 -m <module> …`
+  The modules are `bot.eval_bot recheck <book> --data-dir <run_dir>`, `core.evaluate …` and
+  `core.compare bar|crosscheck|rounds …`. Leave `OPENCLAW_SHELL` off for anything that calls
+  `openclaw agent`.
+- **Verify store:** `~/.openclaw/scriptorium-eval/<run>/eval/`, which holds `fence/*.json`,
+  `judgements/*.json`, `score.json` and `compare.json`, plus the driver's stdout.
+- **Propagation:** none. Writes are synchronous files. Two identical reads count as stable.
+- **Make-current:** none. Test the branch as it stands.
+
 ## Do NOT
 - Never commit anything from `books/` or `index/`, or any `.epub`.

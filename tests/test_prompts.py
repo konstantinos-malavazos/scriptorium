@@ -226,6 +226,17 @@ def test_judge_rule_says_omitted_secondary_detail_is_not_wrong():
     assert "leaves out a fact" not in text
 
 
+def test_judge_rule_accepts_given_name_family_name_or_both():
+    text = " ".join(JUDGE.read_text(encoding="utf-8").split())
+    assert "given name, family name or both" in text
+
+
+def test_question_writer_rule_names_characters_by_full_name_at_the_position():
+    text = " ".join(WRITER.read_text(encoding="utf-8").split())
+    assert "Name each character by the full name the book has given by that position" in text
+    assert "never contains the `hidden` name" in text
+
+
 def test_judge_example_messages_are_what_core_builds(tmp_path):
     write_split(tmp_path, "example", split_from_book_text("example", fenced(WRITER, "text")[0]))
     approved = load_approved(tmp_path, "example")

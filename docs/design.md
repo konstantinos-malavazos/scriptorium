@@ -252,7 +252,9 @@ Decided in [#5](https://github.com/konstantinos-malavazos/scriptorium/issues/5),
 - **No outside knowledge by default.** If something is not in the cut, everything after
   the position line is exactly "That's not in what you've read so far." It is the one
   fallback: the answerer cannot tell "later in the book" from "never", and a "not yet"
-  would itself be a spoiler.
+  would itself be a spoiler. In the bot, `bot.discuss check` also rejects any hedge about
+  what the reader hasn't seen ("so far", "not named", "not yet" and the like) outside that
+  exact line, so a partial answer stops after what it can cite.
 - **Recap** ([#13](https://github.com/konstantinos-malavazos/scriptorium/issues/13)), on
   "refresh me", "where were we?" or `/recap`:
   - **It confirms the position first,** because a stale position is a spoiler.
