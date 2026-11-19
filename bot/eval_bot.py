@@ -2,6 +2,7 @@
 
     python3 -m bot.eval_bot prepare <book> --from <data dir> --to <run dir> --questions <claude data dir>
     python3 -m bot.eval_bot ask <book> --data-dir <run dir>
+    python3 -m bot.eval_bot recheck <book> --data-dir <run dir>
 
 prepare (host) builds <run dir>/<book> from a copy of the source index, the book's threads.json
 entry, a `ready` status and Claude's questions.json, and refuses when the two splits differ in
@@ -15,6 +16,12 @@ asked (nothing to ask, a setup slip or an openclaw failure); 3 the bot gave a se
 nothing saved; 4 the answer is saved but the session's tool calls could not be read, so no
 fence record exists for it. A session that will not delete afterwards is a warning on stderr and
 leaves the exit code as it was.
+
+recheck (inside the gateway container, since the records hold the container's paths) applies the
+fence to every saved fence record's calls again and rewrites each record's `allowed` and `breach`
+in place, keeping its calls; it prints one line per record and a count with the HOME it used.
+Exit codes: 0 rechecked; 2 nothing rewritten (no fence records, one will not read, holds no calls
+or names a home folder other than HOME, or fencing failed).
 """
 import argparse
 import contextlib
@@ -53,9 +60,11 @@ NESTED_TOOL = "openclaw.nested-tool.v1"
 # large rows (most `read` results) with it.
 UNZSTD = ["node", "-e", "process.stdout.write(require('zlib').zstdDecompressSync(require('fs').readFileSync(0)))"]
 WHERE_IN = re.compile(re.escape(discuss.WHERE_IN_LINE).replace(re.escape("{label}"), ".+"))
-HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1\s*$")
-# The one exit-code report the fence allows, word for word.
-STATUS_ECHO = 'echo "EXIT:$?"'
+HEREDOC = re.compile(r"<<(-?)\s*(['\"]?)(\w+)\2\s*$")
+# An absolute home folder named in a recorded command, e.g. `/home/node`.
+HOME_IN = re.compile(r"(?<![\w.~/-])/home/[^/\s'\"\\]+")
+# The exit-code reports the fence allows, word for word.
+STATUS_ECHOES = ('echo "EXIT:$?"', "echo EXIT:$?", 'echo "EXIT=$?"', "echo EXIT=$?")
 # The agent reads its own instructions before running them.
 OWN_SKILL = json.dumps({"name": "scriptorium"})
 
@@ -132,18 +141,30 @@ def _expands(line: str) -> bool:
     return False
 
 
+def _bash_refuses(command: str) -> bool:
+    """True when bash will not parse the command, so running it would run nothing."""
+    done = subprocess.run(["bash", "-n", "-c", command], stdin=subprocess.DEVNULL, capture_output=True, check=False)
+    return done.returncode != 0
+
+
 def _allowed_exec(command: str, run_dir: str | os.PathLike[str]) -> bool:
     first, *rest = command.split("\n")
     while rest and not rest[-1].strip():
         rest.pop()
-    # The agent reports each exit code itself: `; echo "EXIT:$?"`, or the same as a last line
-    # after a heredoc's terminator (a heredoc cannot take the suffix). No other placement.
-    first = first.removesuffix("; " + STATUS_ECHO)
+    # The agent reports each exit code itself: `; <echo>`, or the echo as a last line after a
+    # heredoc's terminator (a heredoc cannot take the suffix). No other placement.
+    first = next((first.removesuffix("; " + e) for e in STATUS_ECHOES if first.endswith("; " + e)), first)
     heredoc = HEREDOC.search(first)
     if heredoc is not None:
-        if rest and rest[-1] == STATUS_ECHO:
+        tabs, quoted, delimiter = heredoc.group(1), heredoc.group(2), heredoc.group(3)
+        if tabs:
+            # Under `<<-` bash strips leading tabs before it looks for the terminator.
+            rest = [line.lstrip("\t") for line in rest]
+        if rest and rest[-1] in STATUS_ECHOES:
             rest.pop()
-        quoted, delimiter = heredoc.group(1), heredoc.group(2)
+        elif quoted and rest and rest[-1] in {f"{delimiter}; {e}" for e in STATUS_ECHOES}:
+            # Bash never sees a terminator there: the line is stdin to `check`, and nothing runs.
+            rest[-1] = delimiter
         if not rest or rest[-1] != delimiter or delimiter in rest[:-1]:
             return False
         if not quoted and any(_expands(line) for line in rest[:-1]):
@@ -158,7 +179,9 @@ def _allowed_exec(command: str, run_dir: str | os.PathLike[str]) -> bool:
     try:
         tokens = list(lexer)
     except ValueError:
-        return False
+        # Bash parses a whole line before running any of it, so one it refuses ran nothing.
+        # Over several lines the earlier ones would run, so those stay refused.
+        return not rest and _bash_refuses(command)
     if len(tokens) < 7 or tokens[0] != "cd" or not _same_path(tokens[1], PINNED_CLONE) or tokens[2] != "&&":
         return False
     if tokens[3:5] != ["python3", "-m"] or tokens[6] not in SCRIPTS.get(tokens[5], ()):
@@ -178,7 +201,24 @@ def _allowed(call: dict, run_dir: str | os.PathLike[str]) -> bool:
         return True
     if call["tool"] == "skills_read":
         return call["command"] == OWN_SKILL
-    return call["tool"] == "exec" and _allowed_exec(call["command"], run_dir)
+    if call["tool"] != "exec":
+        return False
+    # A Code Mode wrapper run inside another is recorded as its arguments' JSON on one line,
+    # exactly as `_command` writes it, with no `arguments` key; each tool its JS runs is
+    # recorded and fenced on its own. A shell call is recorded the same way, so only that exact
+    # text counts: other JSON-looking text (several lines, other spacing) is fenced as shell.
+    # Blind spot: a shell call whose text is that exact line, with a `$(…)` inside a string
+    # value, does run the substitution and passes here; text alone cannot tell it from a real
+    # wrapper, whose JS holds `${…}` and backticks too. It is the same blind spot as a JS
+    # wrapper starting a process that no tool call records.
+    if "arguments" not in call:
+        try:
+            args = json.loads(call["command"])
+        except json.JSONDecodeError:
+            args = None
+        if _plumbing("exec", args) and call["command"] == json.dumps(args, ensure_ascii=False, sort_keys=True):
+            return True
+    return _allowed_exec(call["command"], run_dir)
 
 
 def fence_calls(calls: list[dict], run_dir: str | os.PathLike[str]) -> list[dict]:
@@ -346,6 +386,14 @@ def forget(session: str) -> None:
     openclaw.call(["memory", "forget", "--agent", AGENT, "--session", key, "--json"])
 
 
+def _write_fence(path: Path, record: dict, calls: list[dict]) -> bool:
+    """Write `record` with the fenced `calls` and their verdict `breach` to `path`, keeping
+    the record's key order; True on a breach. `ask` and `recheck` both write through here."""
+    breach = not all(c["allowed"] for c in calls)
+    _write_text(path, json.dumps({**record, "breach": breach, "calls": calls}, ensure_ascii=False, indent=2) + "\n")
+    return breach
+
+
 def _ask_in(run_dir: Path, book: str, step: dict, thread: str, session: str) -> int:
     qid = step["id"]
     with tempfile.TemporaryDirectory(prefix="scriptorium-eval-") as tmp:
@@ -364,9 +412,7 @@ def _ask_in(run_dir: Path, book: str, step: dict, thread: str, session: str) -> 
     except FenceUnreadable as e:
         print(f"{qid}: answer saved, but cannot check the fence: {e}")
         return 4
-    breach = not all(c["allowed"] for c in calls)
-    record = {"id": qid, "session": session, "breach": breach, "calls": calls}
-    _write_text(fence_path(run_dir, book, qid), json.dumps(record, ensure_ascii=False, indent=2) + "\n")
+    breach = _write_fence(fence_path(run_dir, book, qid), {"id": qid, "session": session}, calls)
     print(f"{qid} answered · fence {'breach' if breach else 'clean'}")
     return 0
 
@@ -405,6 +451,59 @@ def ask(run_dir: Path, book: str) -> int:
     return code
 
 
+def _fenceable(record: object) -> bool:
+    calls = record.get("calls") if isinstance(record, dict) else None
+    return isinstance(calls, list) and all(
+        isinstance(c, dict) and isinstance(c.get("tool"), str) and isinstance(c.get("command"), str) for c in calls)
+
+
+def recheck(run_dir: Path, book: str) -> int:
+    folder = fence_path(run_dir, book, "x").parent
+    paths = sorted(folder.glob("*.json")) if folder.is_dir() else []
+    if not paths:
+        print(f"bot.eval_bot recheck: no fence records in {folder}", file=sys.stderr)
+        return 2
+    home = os.path.normpath(os.path.expanduser("~"))
+    records = {}
+    for path in paths:
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
+            print(f"bot.eval_bot recheck: {path} will not read, nothing rewritten: {e}", file=sys.stderr)
+            return 2
+        if not _fenceable(record):
+            print(f"bot.eval_bot recheck: {path} holds no readable calls, nothing rewritten", file=sys.stderr)
+            return 2
+        # `~` in a command is fenced against this HOME, so records written under another one
+        # would all read as breaches.
+        other = next((h for c in record["calls"] for h in HOME_IN.findall(c["command"]) if h != home), None)
+        if other is not None:
+            print(f"bot.eval_bot recheck: {path} names {other}, but HOME here is {home}; run it where ask ran,"
+                  " nothing rewritten", file=sys.stderr)
+            return 2
+        records[path] = record
+    fenced = {}
+    for path, record in records.items():
+        try:
+            fenced[path] = fence_calls([{k: v for k, v in c.items() if k != "allowed"} for c in record["calls"]], run_dir)
+        except OSError as e:
+            print(f"bot.eval_bot recheck: fencing {path} failed, nothing rewritten: {e}", file=sys.stderr)
+            return 2
+    breaches = flagged = 0
+    for path, record in records.items():
+        calls = fenced[path]
+        breach = _write_fence(path, record, calls)
+        breaches += breach
+        flagged += sum(not c["allowed"] for c in calls)
+        was = record.get("breach")
+        line = f"{path.stem} fence {'breach' if breach else 'clean'}"
+        if isinstance(was, bool) and was != breach:
+            line += f" (was {'breach' if was else 'clean'})"
+        print(line)
+    print(f"{breaches} of {len(records)} records breach · {flagged} calls flagged · HOME {home}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python3 -m bot.eval_bot", description="Ask the bot the evaluator's questions.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -416,6 +515,9 @@ def main(argv: list[str] | None = None) -> int:
     p_ask = sub.add_parser("ask", help="ask the bot the current question")
     p_ask.add_argument("book", type=book_name)
     p_ask.add_argument("--data-dir", required=True, type=data_dir, help="the run dir")
+    p_recheck = sub.add_parser("recheck", help="re-apply the fence to the run's saved records")
+    p_recheck.add_argument("book", type=book_name)
+    p_recheck.add_argument("--data-dir", required=True, type=data_dir, help="the run dir")
     args = parser.parse_args(argv)
     if args.command == "prepare":
         try:
@@ -425,6 +527,8 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         print(f"prepared {dest}")
         return 0
+    if args.command == "recheck":
+        return recheck(args.data_dir, args.book)
     return ask(args.data_dir, args.book)
 
 

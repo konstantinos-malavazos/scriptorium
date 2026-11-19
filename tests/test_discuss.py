@@ -247,6 +247,26 @@ def test_check_fails_an_answer_past_the_reader_or_off_the_rules(data, capsys, mo
     assert (code, out) == (1, "") and err.strip()
 
 
+@pytest.mark.parametrize("hedge", ["No name for him appears in what you've read so far.",
+                                   "No name for him appears in what you’ve read so far.",
+                                   "Not named yet.",
+                                   "He isn't named in what you've read so far.",
+                                   "He isn’t NAMED here."])
+def test_check_fails_a_cited_answer_that_hedges_about_what_the_reader_has_not_seen(data, capsys, monkeypatch, hedge):
+    say(data, capsys, "set", "ch 2 · scene 1")
+    answer = f"Up to ch 2 · scene 1:\nAn old ferryman [ch 1 · 1]. {hedge}\n"
+    code, out, err = check(data, capsys, monkeypatch, answer)
+    assert (code, out) == (1, "") and "say nothing about what is missing" in err
+
+
+@pytest.mark.parametrize("answer", [f"Up to ch 2 · scene 1:\n{FALLBACK}\n",
+                                    "Up to ch 2 · scene 1:\nTamsin later says the bridge is old [ch 1 · 1].\n",
+                                    "Up to ch 2 · scene 1:\nTamsin Rook crossed the bridge [ch 1 · 1].\n"])
+def test_check_passes_the_exact_fallback_a_narrative_later_and_a_plain_cited_answer(data, capsys, monkeypatch, answer):
+    say(data, capsys, "set", "ch 2 · scene 1")
+    assert check(data, capsys, monkeypatch, answer)[:2] == (0, "ok")
+
+
 def test_check_rebuilds_a_cut_that_drifted_from_the_saved_position(data, capsys, monkeypatch):
     say(data, capsys, "set", "ch 2 · scene 1")
     (data / BOOK / "cut" / "position.json").unlink()
@@ -298,6 +318,24 @@ def test_the_skill_relays_only_the_last_line_a_script_printed():
     assert "Exit 3: reply with the last line it printed." in flat
     assert "what it printed, word for word" not in flat
     assert "reply with the printed line." not in flat.split("### Answering")[1]
+
+
+def test_the_skill_answers_from_what_read_printed_and_keeps_the_one_fallback_word_for_word():
+    flat = " ".join(SKILL.read_text(encoding="utf-8").split())
+    answering = flat.split("### Answering")[1].split("## Setup")[0]
+    assert "answer from whatever the output holds that bears on the question" in answering
+    assert "and stop after what you can cite: say nothing about what is missing" in answering
+    assert f"only when the output holds nothing on the question, the whole answer after line 1 is exactly `{FALLBACK}`" in answering
+    never = "Never reword that line (no \"isn't named\", \"not yet\" or \"so far\" of your own) and never hint that something comes later;"
+    assert never in answering
+    rejects = ("`check` rejects the fallback's words (\"so far\", \"what you've read\", \"not yet\", \"isn't named\", "
+               "\"not named\") anywhere but in the exact fallback.")
+    assert rejects in answering
+    assert "write \"the book hasn't said\" only as a cited sentence" in answering
+    rest = answering.replace(never, "").replace(rejects, "").replace(FALLBACK, "")
+    for banned in ("isn't named", "not yet", "so far", "later"):
+        assert banned not in rest, banned
+    assert "read 'the captain'\\''s log'" in answering  # an apostrophe in the key words
 
 
 def quoted(text: str) -> str:

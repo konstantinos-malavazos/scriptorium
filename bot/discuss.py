@@ -24,7 +24,7 @@ from typing import NoReturn
 from bot import openclaw
 from bot.new_thread import NOT_A_BOOK_THREAD_LINE, UNKNOWN_BOOK_LINE, book_thread, read_threads
 from core.brief import Position
-from core.cut import check_answer, parse_position, read_cut
+from core.cut import FALLBACK, check_answer, parse_position, read_cut
 from core.reader import (bare_section, find_scenes, fresh_cut, limit_order, move_to, relation, saved_position,
                          section_edge)
 from core.split import SplitNotApproved, load_approved
@@ -37,6 +37,8 @@ NO_MATCH_LINE = "No scene I can see matches that. Which section are you in, and 
 MATCHES_LINE = "Is it one of these?"
 BROKEN_LINE = "I can't read this book's index right now."
 USAGE_LINE = "Something went wrong on my side. Could you ask that again?"
+# The fallback's own words: outside the exact fallback they hint at what the reader hasn't seen.
+HEDGES = ("so far", "what you've read", "not yet", "isn't named", "not named")
 
 
 def _label(approved: dict, pos: Position) -> str:
@@ -121,13 +123,23 @@ def _read(args: argparse.Namespace, data_dir: Path, book: str) -> int:
     return 0
 
 
+def _hedges(answer: str) -> list[str]:
+    """An error for each of HEDGES in the answer after its first line, unless that is exactly FALLBACK."""
+    body = answer.strip().partition("\n")[2].strip()
+    if body == FALLBACK:
+        return []
+    flat = body.replace("’", "'").lower()
+    return [f"{hedge!r}: stop after what you can cite and say nothing about what is missing; or make the "
+            f"whole answer after the first line exactly {FALLBACK!r}" for hedge in HEDGES if hedge in flat]
+
+
 def _check(args: argparse.Namespace, data_dir: Path, book: str) -> int:
     answer = sys.stdin.read()
     pos = fresh_cut(data_dir, book)
     if pos is None:
         print(NO_POSITION_LINE)
         return 3
-    errors = check_answer(answer, load_approved(data_dir, book), pos)
+    errors = check_answer(answer, load_approved(data_dir, book), pos) + _hedges(answer)
     for error in errors:
         print(error, file=sys.stderr)
     if errors:
