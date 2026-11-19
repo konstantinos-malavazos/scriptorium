@@ -23,6 +23,7 @@ ASK_SKILL = PROMPTS / "skills" / "ask-book" / "SKILL.md"
 WRITER = PROMPTS / "agents" / "question-writer.md"
 JUDGE = PROMPTS / "agents" / "judge.md"
 EVAL_SKILL = PROMPTS / "skills" / "evaluate-book" / "SKILL.md"
+BOT_EVAL_SKILL = PROMPTS / "skills" / "evaluate-bot" / "SKILL.md"
 JUDGE_DENIED = {"Read", "Write", "Edit", "NotebookEdit", "Bash", "Glob", "Grep", "WebFetch", "WebSearch",
                 "Agent", "Skill", "mcp__*"}
 
@@ -256,6 +257,52 @@ def test_evaluate_book_skill_stops_instead_of_saving_a_failed_answer():
     assert "never save an error as an answer" in body
 
 
+def test_evaluate_bot_skill_names_itself_and_drives_the_bot_and_the_comparison():
+    assert frontmatter(BOT_EVAL_SKILL)["name"] == "evaluate-bot"
+    body = BOT_EVAL_SKILL.read_text(encoding="utf-8")
+    for command in ("next", "judge", "score"):
+        assert f"python -m core.evaluate {command}" in body, command
+    for command in ("bar", "crosscheck", "rounds"):
+        assert f"python -m core.compare {command}" in body, command
+    for command in ("prepare", "ask"):
+        assert f"python3 -m bot.eval_bot {command}" in body or f"python -m bot.eval_bot {command}" in body, command
+    assert "`judge`" in body
+    assert "book-answerer" not in body
+    assert "OPENCLAW_SHELL=exec" not in body
+    assert "docker exec" in body
+
+
+def test_evaluate_bot_skill_does_not_stop_on_claudes_bar_and_posts_nothing():
+    body = " ".join(BOT_EVAL_SKILL.read_text(encoding="utf-8").split())
+    assert "do not stop on exit 1" in body
+    assert "never save an error as an answer" in body
+    assert "do not post it" in body
+    assert "needs the owner's go-ahead" in body
+
+
+def test_evaluate_bot_skill_prepares_a_fresh_run_before_any_evaluator_call():
+    body = BOT_EVAL_SKILL.read_text(encoding="utf-8")
+    check = "test -d ~/.openclaw/scriptorium-eval/<run>-<label>/'<book>'"
+    assert check in body
+    assert body.index(check) < body.index("python -m core.evaluate")
+    assert body.index(check) < body.index("python -m bot.eval_bot prepare")
+    assert "no questions yet" not in body
+
+
+def test_evaluate_bot_skill_gives_each_attempt_its_own_run_folder_and_kept_score():
+    body = BOT_EVAL_SKILL.read_text(encoding="utf-8")
+    assert "--to ~/.openclaw/scriptorium-eval/<run>-<label> --questions index" in body
+    assert not re.search(r"scriptorium-eval/<run>(?!-<label>)", body)
+    assert "'<book>'-scores/<run>-<label>.json" in body
+    assert "-scores/<label>.json" not in body
+
+
+def test_evaluate_bot_skill_passes_claudes_score_first_to_the_stop_rule():
+    body = BOT_EVAL_SKILL.read_text(encoding="utf-8")
+    assert ("python -m core.compare rounds index/'<book>'/eval/score.json"
+            " ~/.openclaw/scriptorium-eval/'<book>'-scores/bot-baseline.json") in body
+
+
 def test_claude_discovery_paths_are_relative_symlinks_to_the_prompts_sources():
     for link, source in (
         (ROOT / ".claude" / "agents" / "section-worker.md", AGENT),
@@ -265,6 +312,7 @@ def test_claude_discovery_paths_are_relative_symlinks_to_the_prompts_sources():
         (ROOT / ".claude" / "agents" / "question-writer.md", WRITER),
         (ROOT / ".claude" / "agents" / "judge.md", JUDGE),
         (ROOT / ".claude" / "skills" / "evaluate-book" / "SKILL.md", EVAL_SKILL),
+        (ROOT / ".claude" / "skills" / "evaluate-bot" / "SKILL.md", BOT_EVAL_SKILL),
     ):
         assert link.is_symlink(), link
         assert not os.path.isabs(os.readlink(link)), link
