@@ -7,10 +7,17 @@ passed in. It never sees split text.
 
 from __future__ import annotations
 
+import re
 from typing import NamedTuple
 
 RECENT_SECTIONS = 3
+RECAP_KEY_MAX = 8
 CHAPTER0_LABEL = "chapter 0"
+RECAP_WHOLE_BUDGET = 6000
+RECAP_RECENT_BUDGET = 9000
+EARLIER_NOTE = "(Some scene lines are left out here to fit; read the sections by name for more.)"
+
+_SENTENCE_END = re.compile(r"[.!?][\"'”’»)]*(?=\s|$)")
 
 
 class Position(NamedTuple):
@@ -76,6 +83,39 @@ def build_brief(chapter0: dict | None, sections: list[tuple[int, str, dict]], up
     }
 
 
+def build_recap(chapter0: dict | None, sections: list[tuple[int, str, dict]], upto: Position) -> dict:
+    """{summaries, recent, key, also}: the material a recap at `upto` is written from.
+
+    `summaries` is every story section behind `upto` (chapter 0 left out); `recent` the last
+    RECENT_SECTIONS of them in detail. `key` holds the brief's character entries for at most
+    RECAP_KEY_MAX people who are the pov of a scene in `recent` or appear in 2+ of its
+    sections, ranked by how many of those sections they appear in (a pov counts as appearing),
+    ties by casefolded name then name; `also` every other name in `recent`, sorted.
+    """
+    story = [(label, scenes) for label, scenes, is_chapter0 in included_scenes(chapter0, sections, upto)
+             if not is_chapter0]
+    summaries = [{"section": label, "scenes": [{"scene": s["scene"], "summary": s["summary"]} for s in scenes]}
+                 for label, scenes in story]
+    recent = [{"section": label,
+               "scenes": [{"scene": s["scene"], "pov": s["pov"], "summary": s["summary"], "events": s["events"]}
+                          for s in scenes]}
+              for label, scenes in story[-RECENT_SECTIONS:]]
+
+    povs = {s["pov"] for _, scenes in story[-RECENT_SECTIONS:] for s in scenes if s["pov"]}
+    sections_of: dict[str, int] = {}
+    for _, scenes in story[-RECENT_SECTIONS:]:
+        names = {c["name"] for s in scenes for c in s["characters"]} | {s["pov"] for s in scenes if s["pov"]}
+        for name in names:
+            sections_of[name] = sections_of.get(name, 0) + 1
+    characters = build_brief(chapter0, sections, upto)["characters"]
+    eligible = [c for c in characters if c["name"] in povs or sections_of.get(c["name"], 0) >= 2]
+    key = sorted(eligible, key=lambda c: (-sections_of.get(c["name"], 0), c["name"].casefold(), c["name"]))
+    key = key[:RECAP_KEY_MAX]
+    keyed = {c["name"] for c in key}
+    also = sorted((n for n in sections_of if n not in keyed), key=lambda n: (n.casefold(), n))
+    return {"summaries": summaries, "recent": recent, "key": key, "also": also}
+
+
 def render_brief(brief: dict) -> str:
     """The brief as Markdown for a worker prompt or a recap."""
     parts: list[str] = []
@@ -96,3 +136,101 @@ def render_brief(brief: dict) -> str:
             blocks.append(f"#### {r['section']}\n\n{scenes}")
         parts.append("### Recent sections\n\n" + "\n\n".join(blocks))
     return "\n\n".join(parts) if parts else "(empty: this is the start of the book)"
+
+
+def _first_sentence(text: str) -> str:
+    text = " ".join(text.split())
+    end = _SENTENCE_END.search(text)
+    return text[:end.end()] if end else text
+
+
+def _cite(label: str, scene: int) -> str:
+    return f"[{label} · {scene}]"
+
+
+def _cite_seen(seen: str) -> str:
+    """`seen` as a citation; a chapter-0 line has no story citation, so it is named plainly."""
+    label, sep, scene = seen.rpartition(" · scene ")
+    return _cite(label, int(scene)) if sep else f"({seen})"
+
+
+def _earlier_block(summaries: list[dict]) -> str:
+    """One first-sentence line per scene for `summaries`, within RECAP_WHOLE_BUDGET.
+
+    Over budget, no section is dropped: each keeps its first scene line, and the room left
+    is shared evenly in reading order (a section's unspent share passes to the next), each
+    section keeping its following lines in order while its share lasts, then EARLIER_NOTE
+    is added. If one line per section is already over budget, that is what is returned.
+    """
+    if not summaries:
+        return ""
+    lines = [[f"- {_cite(s['section'], c['scene'])} {_first_sentence(c['summary'])}" for c in s["scenes"]]
+             for s in summaries]
+    heads = [f"### {s['section']}\n\n" for s in summaries]
+
+    def render(counts: list[int], note: bool) -> str:
+        body = "\n\n".join(h + "\n".join(ls[:n]) for h, ls, n in zip(heads, lines, counts))
+        return f"{body}\n\n{EARLIER_NOTE}" if note else body
+
+    full = render([len(ls) for ls in lines], False)
+    if len(full) <= RECAP_WHOLE_BUDGET:
+        return full
+    counts = [min(1, len(ls)) for ls in lines]
+    room = RECAP_WHOLE_BUDGET - len(render(counts, True))
+    for i, ls in enumerate(lines):
+        share = room // (len(lines) - i)
+        while counts[i] < len(ls) and len(ls[counts[i]]) + 1 <= share:
+            spent = len(ls[counts[i]]) + 1
+            share -= spent
+            room -= spent
+            counts[i] += 1
+    return render(counts, True)
+
+
+def render_recap(recap: dict, position_line: str) -> str:
+    """The recap material as text the bot writes from: `position_line` first, then the whole
+    story (first sentence per scene), the recent sections in full and who is in play. Every
+    scene line carries its citation.
+
+    Each block has its own budget. The whole-story block covers only the sections before the
+    recent ones and is trimmed by _earlier_block to RECAP_WHOLE_BUDGET. The recent block
+    (RECAP_RECENT_BUDGET) drops the event bullets of its oldest section first; once every
+    event is gone it drops the oldest scenes, but always keeps the last one. Who is in play
+    is never cut.
+    """
+    whole = _earlier_block(recap["summaries"][:len(recap["summaries"]) - len(recap["recent"])])
+
+    def recent_block(events_from: int, scenes_dropped: int) -> str:
+        sections = []
+        for i, r in enumerate(recap["recent"]):
+            lines = []
+            for c in r["scenes"]:
+                if scenes_dropped > 0:
+                    scenes_dropped -= 1
+                    continue
+                pov = f"(pov: {c['pov']}) " if c["pov"] else ""
+                lines.append(f"- {_cite(r['section'], c['scene'])} {pov}{c['summary']}")
+                if i >= events_from:
+                    lines += [f"  - {e}" for e in c["events"]]
+            if lines:
+                sections.append(f"### {r['section']}\n\n" + "\n".join(lines))
+        return "\n\n".join(sections)
+
+    scene_count = sum(len(r["scenes"]) for r in recap["recent"])
+    attempts = [(i, 0) for i in range(len(recap["recent"]) + 1)]
+    attempts += [(len(recap["recent"]), n) for n in range(1, scene_count)]
+    recent = next((b for b in (recent_block(*a) for a in attempts) if len(b) <= RECAP_RECENT_BUDGET),
+                  recent_block(len(recap["recent"]), max(scene_count - 1, 0)))
+
+    who = []
+    for c in recap["key"]:
+        aka = f" (also: {', '.join(c['aka'])})" if c["aka"] else ""
+        who.append(f"- **{c['name']}**{aka}: {c['line']} {_cite_seen(c['seen'])}")
+    if recap["also"]:
+        who.append(f"Also around: {', '.join(recap['also'])}")
+
+    parts = [position_line,
+             "## The whole story, one line per scene\n\n" + whole,
+             "## The latest sections in full\n\n" + recent,
+             "## Who is in play\n\n" + "\n".join(who)]
+    return "\n\n".join(parts) + "\n"

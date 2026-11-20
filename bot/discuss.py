@@ -7,6 +7,7 @@
     place '<section>'                          is a section the reader names behind them?
     find '<description>' [--within <section> | --upto <section or N%>]
     read [<key word> ...] [--section <section>]
+    recap                                      the material for a recap at the saved position
     check                                      the answer on stdin
 
 The book is the one threads.json records for the thread id or, failing that, the one whose
@@ -23,8 +24,9 @@ from typing import NoReturn
 
 from bot import openclaw
 from bot.new_thread import NOT_A_BOOK_THREAD_LINE, UNKNOWN_BOOK_LINE, book_thread, read_threads
-from core.brief import Position
-from core.cut import FALLBACK, check_answer, parse_position, read_cut
+from core.brief import Position, build_recap, render_recap
+from core.cut import FALLBACK, check_answer, parse_position, position_line, read_cut
+from core.extract import read_outputs
 from core.reader import (bare_section, find_scenes, fresh_cut, limit_order, move_to, relation, saved_position,
                          section_edge)
 from core.split import SplitNotApproved, load_approved
@@ -123,6 +125,18 @@ def _read(args: argparse.Namespace, data_dir: Path, book: str) -> int:
     return 0
 
 
+def _recap(args: argparse.Namespace, data_dir: Path, book: str) -> int:
+    upto = fresh_cut(data_dir, book)
+    if upto is None:
+        print(NO_POSITION_LINE)
+        return 3
+    approved = load_approved(data_dir, book)
+    chapter0, sections = read_outputs(data_dir, book, approved, upto)
+    recap = build_recap(chapter0, sections, upto)
+    print(render_recap(recap, position_line(_label(approved, upto), upto.scene)).rstrip("\n"))
+    return 0
+
+
 def _hedges(answer: str) -> list[str]:
     """An error for each of HEDGES in the answer after its first line, unless that is exactly FALLBACK."""
     body = answer.strip().partition("\n")[2].strip()
@@ -209,6 +223,7 @@ def main(argv: list[str] | None = None) -> int:
     p_read.add_argument("words", nargs="*", help="the question's key words")
     p_read.add_argument("--section", help="a section the question names, read whole")
     p_read.set_defaults(run=_read)
+    sub.add_parser("recap", parents=[common], help="the material for a recap at the saved position").set_defaults(run=_recap)
     sub.add_parser("check", parents=[common], help="check an answer on stdin").set_defaults(run=_check)
     try:
         args = parser.parse_args(argv)

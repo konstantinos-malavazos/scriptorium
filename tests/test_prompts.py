@@ -3,9 +3,10 @@ import os
 import re
 from pathlib import Path
 
-from core.brief import Position
-from core.cut import FALLBACK, check_answer
+from core.brief import Position, render_recap
+from core.cut import FALLBACK, check_answer, position_line
 from core.evaluate import ACCURACY_KINDS, TRAP_KINDS, _judge_message, book_text, check_question, parse_judgement
+from core.evaluate import parse_recap_judgement
 from core.evaluate import TOP_FIELDS as EVAL_TOP_FIELDS
 from core.evaluate import TOP_OPTIONAL as EVAL_TOP_OPTIONAL
 from core.extract import INSTRUCTIONS
@@ -22,6 +23,7 @@ ANSWERER = PROMPTS / "agents" / "book-answerer.md"
 ASK_SKILL = PROMPTS / "skills" / "ask-book" / "SKILL.md"
 WRITER = PROMPTS / "agents" / "question-writer.md"
 JUDGE = PROMPTS / "agents" / "judge.md"
+RECAP_JUDGE = PROMPTS / "agents" / "recap-judge.md"
 EVAL_SKILL = PROMPTS / "skills" / "evaluate-book" / "SKILL.md"
 BOT_EVAL_SKILL = PROMPTS / "skills" / "evaluate-bot" / "SKILL.md"
 JUDGE_DENIED = {"Read", "Write", "Edit", "NotebookEdit", "Bash", "Glob", "Grep", "WebFetch", "WebSearch",
@@ -36,6 +38,39 @@ EXAMPLE_BRIEF = {
     "chapter0": None,
 }
 EXAMPLE_SCENE_2 = "Up on the tower stood the grey-coated man, whom the guards called Kell."
+
+# The recap judge's example material is render_recap of this, at ch 4 · scene 1.
+EXAMPLE_RECAP = {
+    "summaries": [
+        {"section": "ch 1", "scenes": [
+            {"scene": 1, "summary": "Marta takes over the water-tower key from her uncle. She swears to keep the "
+                                    "town's water fair."},
+            {"scene": 2, "summary": "A grey-coated man watches the tower from the road."}]},
+        {"section": "ch 2", "scenes": [{"scene": 1, "summary": "The guards call the grey-coated man Kell."}]},
+        {"section": "ch 3", "scenes": [
+            {"scene": 1, "summary": "Kell offers Marta silver for the key, and she refuses."},
+            {"scene": 2, "summary": "Marta hides the key in the well-house."}]},
+        {"section": "ch 4", "scenes": [
+            {"scene": 1, "summary": "A drought empties the cistern, and the council asks Marta to open the tower."}]},
+    ],
+    "recent": [
+        {"section": "ch 2", "scenes": [
+            {"scene": 1, "pov": "Marta", "summary": "The guards call the grey-coated man Kell.",
+             "events": ["Kell asks the guards who holds the key."]}]},
+        {"section": "ch 3", "scenes": [
+            {"scene": 1, "pov": "Kell", "summary": "Kell offers Marta silver for the key, and she refuses.", "events": []},
+            {"scene": 2, "pov": "Marta", "summary": "Marta hides the key in the well-house.", "events": []}]},
+        {"section": "ch 4", "scenes": [
+            {"scene": 1, "pov": "Marta",
+             "summary": "A drought empties the cistern, and the council asks Marta to open the tower.",
+             "events": ["Marta opens the tower at noon."]}]},
+    ],
+    "key": [
+        {"name": "Marta", "aka": ["the key-keeper"], "line": "keeps the water-tower key", "seen": "ch 4 · scene 1"},
+        {"name": "Kell", "aka": [], "line": "a grey-coated man who wants the key", "seen": "ch 3 · scene 1"},
+    ],
+    "also": ["Old Bren"],
+}
 
 
 def instructions() -> str:
@@ -250,6 +285,63 @@ def test_judge_example_messages_are_what_core_builds(tmp_path):
         assert _judge_message(approved, question, answer) == message.strip()
 
 
+def test_recap_judge_is_pinned_to_opus_at_medium_with_no_file_tools():
+    fields = frontmatter(RECAP_JUDGE)
+    assert fields["name"] == "recap-judge"
+    assert fields["model"] == "claude-opus-5-5"
+    assert fields["effort"] == "medium"
+    assert "tools" not in fields
+    denied = {t.strip() for t in fields["disallowedTools"].split(",")}
+    assert JUDGE_DENIED <= denied, JUDGE_DENIED - denied
+
+
+def test_recap_judge_flags_later_events_and_facts_the_material_does_not_hold():
+    text = " ".join(RECAP_JUDGE.read_text(encoding="utf-8").split())
+    assert "appears in `later:` and not in the material" in text
+    assert "in neither the material nor `later:`" in text
+    assert "A fact that the material holds is never a leak" in text
+
+
+def test_recap_judge_example_replies_pass_the_recap_judgement_check():
+    replies = fenced(RECAP_JUDGE, "json")
+    assert len(replies) == 3, "expected a clean example, a later-event leak and a fact-from-nowhere leak"
+    leaks = []
+    for reply in replies:
+        obj, errors = parse_recap_judgement(reply)
+        assert errors == [] and obj is not None, reply
+        leaks.append(obj["leak"])
+    assert leaks == [False, True, True]
+
+
+def test_recap_judge_example_message_is_what_core_builds():
+    blocks = fenced(RECAP_JUDGE, "text")
+    assert len(blocks) == 4, "expected the message shape, one whole example message and two other recaps"
+    head, _ = blocks[1].strip().split("\nrecap:\n", 1)
+    head, later = head.split("\nlater:\n", 1)
+    position, material = head.split("\nmaterial:\n", 1)
+    assert position == "position: ch 4 · scene 1"
+    assert material == render_recap(EXAMPLE_RECAP, position_line("ch 4", 1)).strip()
+    for line in later.splitlines():
+        match = re.fullmatch(r"- ch (\d+) · (\d+): \S.*", line)
+        assert match, line
+        assert (int(match[1]), int(match[2])) > (4, 1), line
+
+
+def test_recap_judge_example_recaps_pass_the_cut_check(tmp_path):
+    # A recap failing the cut check is never judged, so every example recap must pass it.
+    blocks = fenced(RECAP_JUDGE, "text")
+    message = blocks[1].strip()
+    later = message.split("\nlater:\n", 1)[1].split("\nrecap:\n", 1)[0]
+    scenes = [(s["section"], c["scene"]) for s in EXAMPLE_RECAP["summaries"] for c in s["scenes"]]
+    scenes += [(m[1], int(m[2])) for m in re.finditer(r"^- (.+) · (\d+): ", later, re.MULTILINE)]
+    text = "\n\n".join(f"== {label} · scene {k} ==\nA line of the book." for label, k in scenes)
+    write_split(tmp_path, "example", split_from_book_text("example", text))
+    approved = load_approved(tmp_path, "example")
+    recaps = [message.split("\nrecap:\n", 1)[1], *blocks[2:]]
+    for recap in recaps:
+        assert check_answer(recap, approved, Position(4, 1)) == [], recap
+
+
 def test_evaluate_book_skill_names_itself_drives_the_evaluator_and_asks_through_ask_book():
     assert frontmatter(EVAL_SKILL)["name"] == "evaluate-book"
     body = EVAL_SKILL.read_text(encoding="utf-8")
@@ -314,6 +406,21 @@ def test_evaluate_bot_skill_passes_claudes_score_first_to_the_stop_rule():
             " ~/.openclaw/scriptorium-eval/'<book>'-scores/bot-baseline.json") in body
 
 
+def test_evaluate_bot_skill_runs_the_recaps_after_the_questions_and_drafts_their_line():
+    body = BOT_EVAL_SKILL.read_text(encoding="utf-8")
+    for command in ("recap-next", "recap-judge", "recap-score"):
+        assert f"python -m core.evaluate {command} '<book>'" in body, command
+    recap = ("docker exec openclaw-openclaw-gateway-1 bash -c \"cd ~/code/scriptorium && python3 -m bot.eval_bot recap"
+             " '<book>' --data-dir ~/.openclaw/scriptorium-eval/<run>-<label>\"")
+    assert recap in body
+    assert "`recap-judge` sub-agent" in body
+    assert body.index("python -m core.evaluate next") < body.index("python -m core.evaluate recap-next")
+    assert body.index("python -m core.evaluate recap-score") < body.index("python -m core.evaluate score")
+    flat = " ".join(body.split())
+    assert "then the `recap-score` line" in flat
+    assert "story so far" not in flat.lower()
+
+
 def test_claude_discovery_paths_are_relative_symlinks_to_the_prompts_sources():
     for link, source in (
         (ROOT / ".claude" / "agents" / "section-worker.md", AGENT),
@@ -322,6 +429,7 @@ def test_claude_discovery_paths_are_relative_symlinks_to_the_prompts_sources():
         (ROOT / ".claude" / "skills" / "ask-book" / "SKILL.md", ASK_SKILL),
         (ROOT / ".claude" / "agents" / "question-writer.md", WRITER),
         (ROOT / ".claude" / "agents" / "judge.md", JUDGE),
+        (ROOT / ".claude" / "agents" / "recap-judge.md", RECAP_JUDGE),
         (ROOT / ".claude" / "skills" / "evaluate-book" / "SKILL.md", EVAL_SKILL),
         (ROOT / ".claude" / "skills" / "evaluate-bot" / "SKILL.md", BOT_EVAL_SKILL),
     ):
