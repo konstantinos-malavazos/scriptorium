@@ -249,4 +249,21 @@ def test_render_recap_drops_the_oldest_recent_scenes_when_summaries_alone_exceed
     whole, recent, _ = split_blocks(out)
     assert len(recent) <= RECAP_RECENT_BUDGET and len(whole) <= RECAP_WHOLE_BUDGET
     assert "S5k5 " in recent and "S3k1 " not in recent and "### ch 3" not in recent
-    assert whole.strip() and "### ch 2" in whole and "### ch 3" not in whole
+    assert whole.strip() and "### ch 2" in whole and "### ch 3" in whole
+
+
+def test_render_recap_hands_the_scenes_the_recent_block_drops_to_the_whole_story_block():
+    def sec(o):
+        return (o, f"ch {o}", record(f"ch {o}", *[scene(k, f"S{o}k{k} " + "word " * 200 + ".") for k in range(1, 6)]))
+    recap = build_recap(None, [sec(o) for o in range(1, 7)], Position(7, 0))
+    whole, recent, _ = split_blocks(render_recap(recap, "Up to ch 7 · scene 0:"))
+    assert len(recent) <= RECAP_RECENT_BUDGET and len(whole) <= RECAP_WHOLE_BUDGET
+    dropped = [(o, k) for o in (4, 5, 6) for k in range(1, 6) if f"S{o}k{k} " not in recent]
+    assert dropped
+    for o in {o for o, _ in dropped}:
+        first = min(k for oo, k in dropped if oo == o)
+        assert f"### ch {o}" in whole and f"S{o}k{first} " in whole
+    assert all(f"S{o}k{k} " in whole or f"S{o}k{k} " in recent for o in (4, 5, 6) for k in range(1, 6)) \
+        or whole.endswith(EARLIER_NOTE)
+    assert whole.index("### ch 3") < whole.index(f"### ch {dropped[0][0]}")
+    assert "S7" not in whole + recent

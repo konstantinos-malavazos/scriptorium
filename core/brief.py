@@ -192,13 +192,13 @@ def render_recap(recap: dict, position_line: str) -> str:
     story (first sentence per scene), the recent sections in full and who is in play. Every
     scene line carries its citation.
 
-    Each block has its own budget. The whole-story block covers only the sections before the
-    recent ones and is trimmed by _earlier_block to RECAP_WHOLE_BUDGET. The recent block
+    Each block has its own budget. The whole-story block covers the sections before the
+    recent ones, then the scenes the recent block dropped (under their own section header),
+    and is trimmed by _earlier_block to RECAP_WHOLE_BUDGET. The recent block
     (RECAP_RECENT_BUDGET) drops the event bullets of its oldest section first; once every
     event is gone it drops the oldest scenes, but always keeps the last one. Who is in play
     is never cut.
     """
-    whole = _earlier_block(recap["summaries"][:len(recap["summaries"]) - len(recap["recent"])])
 
     def recent_block(events_from: int, scenes_dropped: int) -> str:
         sections = []
@@ -219,8 +219,17 @@ def render_recap(recap: dict, position_line: str) -> str:
     scene_count = sum(len(r["scenes"]) for r in recap["recent"])
     attempts = [(i, 0) for i in range(len(recap["recent"]) + 1)]
     attempts += [(len(recap["recent"]), n) for n in range(1, scene_count)]
-    recent = next((b for b in (recent_block(*a) for a in attempts) if len(b) <= RECAP_RECENT_BUDGET),
-                  recent_block(len(recap["recent"]), max(scene_count - 1, 0)))
+    chosen = next((a for a in attempts if len(recent_block(*a)) <= RECAP_RECENT_BUDGET),
+                  (len(recap["recent"]), max(scene_count - 1, 0)))
+    recent = recent_block(*chosen)
+
+    left, handed = chosen[1], []
+    for r in recap["recent"]:
+        gone = r["scenes"][:left]
+        left -= len(gone)
+        if gone:
+            handed.append({"section": r["section"], "scenes": gone})
+    whole = _earlier_block(recap["summaries"][:len(recap["summaries"]) - len(recap["recent"])] + handed)
 
     who = []
     for c in recap["key"]:
