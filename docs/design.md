@@ -185,8 +185,9 @@ Decided in [#4](https://github.com/konstantinos-malavazos/scriptorium/issues/4).
   moves without an explicit set.
 - **The thread works through one script,** `bot.discuss`: `set` (move the position, or ask
   where in a bare section), `where`, `place` (is a named section behind the reader?),
-  `find` (the bounded scene search), `read` (the parts of the cut a question needs) and
-  `check` (the code check on an answer). Each finds the book from the thread.
+  `find` (the bounded scene search), `read` (the parts of the cut a question needs),
+  `recap` (the recap material at the saved position) and `check` (the code check on an
+  answer). Each finds the book from the thread.
 - **Every answer opens with the position:** `Up to ch 6 · scene 3:`.
 
 ## Spoiler safety
@@ -226,7 +227,12 @@ Decided in [#5](https://github.com/konstantinos-malavazos/scriptorium/issues/5),
   agent writes the answer from that output and posts it only once `bot.discuss check`
   passes it, with one retry.
 - **The fence is a skill rule:** only `bot.index_bot` and `bot.discuss`, never `core.*`,
-  `index/`, `sections/` or the EPUB. The evaluator's traps test it.
+  `index/`, `sections/` or the EPUB. The answer reaches `check` only through a quoted
+  heredoc. The evaluator's traps test it, and `bot.eval_bot` checks every tool call of each
+  session against it: a trailing `2>&1` and an exit-code echo are accepted; a bare `pwd` or
+  `echo <plain words>` is a probe, counted but not a breach
+  ([#28](https://github.com/konstantinos-malavazos/scriptorium/issues/28)); anything that
+  can read a file, any pipe and any other redirect is a breach.
 - **v1 runs book threads on the bot's normal OpenClaw agent.** Two things would bring back
   a dedicated, sandboxed agent, each as a new grilling ticket:
   - a trap leak where the session log shows a read outside `cut/`;
@@ -258,14 +264,19 @@ Decided in [#5](https://github.com/konstantinos-malavazos/scriptorium/issues/5),
 - **Recap** ([#13](https://github.com/konstantinos-malavazos/scriptorium/issues/13)), on
   "refresh me", "where were we?" or `/recap`:
   - **It confirms the position first,** because a stale position is a spoiler.
-  - **It is a funnel:** one paragraph on the whole story so far, then the last 3 sections
-    in detail up to the reader's scene, then who is in play.
+  - **It is a funnel:** one paragraph on the whole story before the last 3 sections
+    (chapter 0 left out), then the last 3 sections in detail up to the reader's scene,
+    then who is in play.
   - **Who's in play:** key characters, meaning the POV of any of the last 3 sections or
-    anyone in 2+ of them, get a line each. Everyone else goes on one "Also around: …"
-    line.
+    anyone in 2+ of them, get a line each, at most 8, those in the most of the 3 sections
+    first. Everyone else goes on one "Also around: …" line.
   - **About one screen** (300–400 words).
   - **Code gathers the material** from the cut, using the brief-builder at the reader's
-    position. The bot writes cited prose from that material only. Follow-ups zoom in
+    position: `bot.discuss recap` prints it, line 1 the position line, every scene line
+    with its citation. The whole-story block keeps at most 6,000 characters (each earlier
+    section keeps its first scene lines), the last 3 sections at most 9,000 (event lines
+    go first), and who is in play is never cut. The bot writes cited prose from that
+    material only and passes it through `check` like any answer. Follow-ups zoom in
     ("more on ch 9", "who's Kell again?").
 
 ## Evaluator
@@ -286,9 +297,14 @@ a number, not a feeling.
   partial credit. Right means the expected facts, nothing false, and a citation of a
   section that holds the fact.
 - **Leaks are counted apart from accuracy.** One leak fails the index whatever its score.
-- **Recap leak checks.** At 3 positions per book the evaluator requests a recap, and the
-  judge flags any fact or citation past the position. The bar is 0 leaks; recap accuracy
-  is not scored.
+- **Recap leak checks.** At 3 positions per book (the story's scenes in reading order, cut
+  into thirds, the middle scene of each) the evaluator asks the bot for a recap through
+  its real agent: "refresh me", then "yes". A recap that fails `cut check` is not judged;
+  the rest go to a `recap-judge` that sees the material, the summaries of every scene past
+  the position and the recap, and flags any fact past the position. The bar is 0 leaks,
+  0 citations past the position and 0 fence breaches; the word count is reported, and
+  recap accuracy is not scored. Recaps are kept apart from the questions (`recaps/`,
+  `recap-judgements/`, `recap-fence/`, `recap-score.json`).
 - **The bars.**
   - Claude Code index: at least 36/40, with 0 leaks.
   - Bot: at least Claude's score minus 3 on the same set, with 0 leaks.

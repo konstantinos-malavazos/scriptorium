@@ -109,6 +109,7 @@ What the reader says, and what you run:
 | "where am I?" | `where` | reply with the printed line |
 | a question that names a section | `place '<section>'` first | `ok`: go on to the question; exit 3: reply with the printed line |
 | any question about the book | `read '<key words>' [--section '<section>']`, then `check` | see "Answering" |
+| "refresh me", "remind me what happened", "where were we?", `/recap` | `where`, then `recap`, then `check` | see "Recapping" |
 
 Use the section exactly as the reader wrote it; never guess one, never list the book's
 sections, and never move the position unless the reader said where they are. A section the
@@ -147,12 +148,58 @@ if you lose track of a question you asked the reader, ask it again.
    ANSWER
    ```
 
+   The answer reaches `check` only through this quoted heredoc: never through `printf`,
+   `echo … | base64 -d`, any other pipe or a temporary file. Nothing goes after the `ANSWER`
+   line but `echo "EXIT:$?"`.
+
 4. Exit 0: post the answer exactly as checked. Exit 1: rewrite it once, fixing every error
    it printed, and check again. `check` rejects the fallback's words ("so far", "what
    you've read", "not yet", "isn't named", "not named") anywhere but in the exact fallback.
    If the second try also fails, post nothing of it; reply
    "I couldn't write an answer that passed the spoiler check. Ask again to try afresh."
    Exit 3: reply with the last line it printed.
+
+### Recapping
+
+When the reader asks to be reminded of the story ("refresh me", "remind me what happened",
+"where were we?", `/recap`):
+
+1. Run `where`. Exit 0: ask "Last time: <section> · scene <k> — still there?" with the
+   section and scene it printed, and wait. Exit 3: reply with the last line it printed, and
+   once the reader says where they are, `set` it as in the table and go on to step 3.
+2. "Yes": go on. A new place: `set` it as in the table (exit 3: reply with the last line it
+   printed and wait), then go on.
+3. Run `recap`:
+
+   ```
+   cd ~/.openclaw/tools/scriptorium && python3 -m bot.discuss recap --thread <this thread's id> --thread-name '<this thread's name>' --parent <the parent channel's id> --data-dir ~/.openclaw/scriptorium
+   ```
+
+   Read the `recap` output exactly as printed; never redirect it to a file or run it again to read it in pieces.
+
+4. Write the recap from the `recap` output alone, about 300 to 400 words, never from what
+   you know about the book:
+   - line 1 is exactly the first line `recap` printed, for example `Up to ch 6 · scene 3:`;
+   - one short paragraph on the whole story before the latest sections, from "The whole
+     story, one line per scene";
+   - then the latest sections, up to the reader's scene, in more detail, from "The latest
+     sections in full";
+   - then who is in play: one line for each person under "Who is in play", saying where
+     they stand now, and one line "Also around: <names>" when the output has that line;
+   - every fact carries a citation copied from the output, in square brackets, for example
+     `[ch 9 · 2]`. A person whose line ends `(chapter 0)` has no citation to copy: cite them
+     from a scene line or leave the fact out, and never write `[chapter 0]`;
+   - never list the book's sections, never hint at what comes after the reader's scene, and
+     use none of the words `check` rejects (step 4 of "Answering").
+5. Check it and post it exactly as in steps 3 and 4 of "Answering", with the recap in place
+   of the answer.
+
+Follow-ups go through the same commands as any question, answered as in "Answering":
+
+- "more on ch 9": `place 'ch 9'`, and on `ok`, `read --section 'ch 9'`;
+- "just the last scene": `read --section '<the section the reader is in>'`, answering about
+  their scene only;
+- "who's Kell again?": `read 'Kell'`.
 
 ## Setup
 

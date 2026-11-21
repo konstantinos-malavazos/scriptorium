@@ -2,6 +2,7 @@
 
     python3 -m bot.eval_bot prepare <book> --from <data dir> --to <run dir> --questions <claude data dir>
     python3 -m bot.eval_bot ask <book> --data-dir <run dir>
+    python3 -m bot.eval_bot recap <book> --data-dir <run dir>
     python3 -m bot.eval_bot recheck <book> --data-dir <run dir>
 
 prepare (host) builds <run dir>/<book> from a copy of the source index, the book's threads.json
@@ -17,9 +18,18 @@ nothing saved; 4 the answer is saved but the session's tool calls could not be r
 fence record exists for it. A session that will not delete afterwards is a warning on stderr and
 leaves the exit code as it was.
 
+recap (inside the gateway container) does the same for the current recap step of core.evaluate:
+it says "refresh me", then "yes" to the bot's position check, in one session, saves the last
+reply as the recap and writes the fence record to eval/recap-fence/. Exit codes as ask.
+
+The fence allows the bot's two scripts from the pinned clone on the run dir, and counts a bare
+`pwd` / `echo <plain words>` probe without flagging it (`"probe": true` on the call, `probes` in
+the record).
+
 recheck (inside the gateway container, since the records hold the container's paths) applies the
-fence to every saved fence record's calls again and rewrites each record's `allowed` and `breach`
-in place, keeping its calls; it prints one line per record and a count with the HOME it used.
+fence to every saved fence record's calls again and rewrites each record's `allowed`, `probe`,
+`breach` and `probes` in place, keeping its calls; it prints one line per record and a count with
+the HOME it used.
 Exit codes: 0 rechecked; 2 nothing rewritten (no fence records, one will not read, holds no calls
 or names a home folder other than HOME, or fencing failed).
 """
@@ -36,6 +46,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from bot import discuss, openclaw
@@ -44,7 +55,7 @@ from bot.index_bot import STATUS_FILE, _resume
 from bot.new_thread import NOT_A_BOOK_THREAD_LINE, THREADS_FILE, UNKNOWN_BOOK_LINE, book_name, read_threads, thread_for, thread_name
 from core.compare import fence_path
 from core.epub import read_epub
-from core.evaluate import eval_dir, next_step, save_answer
+from core.evaluate import eval_dir, next_step, recap_fence_path, recap_next_step, save_answer, save_recap
 from core.extract import _write_text
 from core.split import SplitNotApproved, load_approved
 
@@ -53,7 +64,9 @@ PINNED_CLONE = "~/.openclaw/tools/scriptorium"
 AGENT_DB = Path("~/.openclaw/agents/main/agent/openclaw-agent.sqlite").expanduser()
 SESSIONS_DIR = Path("~/.openclaw/agents/main/sessions").expanduser()
 AGENT = "main"
-SCRIPTS = {"bot.index_bot": {"status"}, "bot.discuss": {"where", "set", "place", "find", "read", "check"}}
+SCRIPTS = {"bot.index_bot": {"status"}, "bot.discuss": {"where", "set", "place", "find", "read", "recap", "check"}}
+# What the evaluator says to get a recap: the request, then yes to the position check.
+RECAP_TURNS = ("refresh me", "yes")
 # Code Mode's own plumbing: the JS wrapper runs the real tools, each recorded as a nested call.
 NESTED_TOOL = "openclaw.nested-tool.v1"
 # Python 3.11 has no zstd; the container's Node has it, and the transcript store compresses
@@ -65,6 +78,11 @@ HEREDOC = re.compile(r"<<(-?)\s*(['\"]?)(\w+)\2\s*$")
 HOME_IN = re.compile(r"(?<![\w.~/-])/home/[^/\s'\"\\]+")
 # The exit-code reports the fence allows, word for word.
 STATUS_ECHOES = ('echo "EXIT:$?"', "echo EXIT:$?", 'echo "EXIT=$?"', "echo EXIT=$?")
+MERGE_STDERR = "2>&1"
+# The tail line after a heredoc's terminator that sends stderr along with the exit code.
+MERGED_ECHOES = tuple(f"{MERGE_STDERR}; {e}" for e in STATUS_ECHOES)
+# What a probe may print: plain text, nothing the shell would glob, expand or redirect.
+PROBE_WORD = re.compile(r"[\w .,:!=+@%/-]+")
 # The agent reads its own instructions before running them.
 OWN_SKILL = json.dumps({"name": "scriptorium"})
 
@@ -160,22 +178,27 @@ def _allowed_exec(command: str, run_dir: str | os.PathLike[str]) -> bool:
         if tabs:
             # Under `<<-` bash strips leading tabs before it looks for the terminator.
             rest = [line.lstrip("\t") for line in rest]
-        if rest and rest[-1] in STATUS_ECHOES:
+        if rest and (rest[-1] in STATUS_ECHOES or rest[-1].strip() in MERGED_ECHOES):
+            # A lone `2>&1` line is a redirection with no command: it runs nothing.
             rest.pop()
-        elif quoted and rest and rest[-1] in {f"{delimiter}; {e}" for e in STATUS_ECHOES}:
+        elif quoted and rest and rest[-1] in {f"{delimiter}{sep}{e}" for sep in ("; ", " 2>&1; ")
+                                              for e in STATUS_ECHOES}:
             # Bash never sees a terminator there: the line is stdin to `check`, and nothing runs.
             rest[-1] = delimiter
         if not rest or rest[-1] != delimiter or delimiter in rest[:-1]:
             return False
         if not quoted and any(_expands(line) for line in rest[:-1]):
             return False
-        first = first[:heredoc.start()]
+        first = first[:heredoc.start()].rstrip()
     elif rest:
         return False
+    # Only this exact suffix: stderr joins stdout, so one refusal line reaches the agent either way.
+    first = first.removesuffix(" " + MERGE_STDERR)
     if _expands(first):
         return False
     lexer = shlex.shlex(first, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
+    lexer.commenters = ""
     try:
         tokens = list(lexer)
     except ValueError:
@@ -196,13 +219,37 @@ def _allowed_exec(command: str, run_dir: str | os.PathLike[str]) -> bool:
     return len(dirs) == 1 and _same_path(dirs[0], run_dir)
 
 
-def _allowed(call: dict, run_dir: str | os.PathLike[str]) -> bool:
-    if call.get("plumbing"):
-        return True
-    if call["tool"] == "skills_read":
-        return call["command"] == OWN_SKILL
-    if call["tool"] != "exec":
+def _probe_exec(command: str) -> bool:
+    """True for a shell probe that reads nothing: one line of `pwd` and `echo <plain words>`
+    commands joined by `&&` or `;`, and nothing else on it."""
+    line = command.strip()
+    if not line or "\n" in line or _expands(line):
         return False
+    lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return False
+    segments: list[list[str]] = [[]]
+    for token in tokens:
+        if token in ("&&", ";"):
+            segments.append([])
+        else:
+            segments[-1].append(token)
+    return all(s == ["pwd"] or (s[:1] == ["echo"] and all(PROBE_WORD.fullmatch(w) for w in s[1:]))
+               for s in segments)
+
+
+def _verdict(call: dict, run_dir: str | os.PathLike[str]) -> dict[str, bool]:
+    """`{"allowed": bool}`, or `{"allowed": True, "probe": True}` for a shell probe."""
+    if call.get("plumbing"):
+        return {"allowed": True}
+    if call["tool"] == "skills_read":
+        return {"allowed": call["command"] == OWN_SKILL}
+    if call["tool"] != "exec":
+        return {"allowed": False}
     # A Code Mode wrapper run inside another is recorded as its arguments' JSON on one line,
     # exactly as `_command` writes it, with no `arguments` key; each tool its JS runs is
     # recorded and fenced on its own. A shell call is recorded the same way, so only that exact
@@ -217,15 +264,20 @@ def _allowed(call: dict, run_dir: str | os.PathLike[str]) -> bool:
         except json.JSONDecodeError:
             args = None
         if _plumbing("exec", args) and call["command"] == json.dumps(args, ensure_ascii=False, sort_keys=True):
-            return True
-    return _allowed_exec(call["command"], run_dir)
+            return {"allowed": True}
+    if _allowed_exec(call["command"], run_dir):
+        return {"allowed": True}
+    if _probe_exec(call["command"]):
+        return {"allowed": True, "probe": True}
+    return {"allowed": False}
 
 
 def fence_calls(calls: list[dict], run_dir: str | os.PathLike[str]) -> list[dict]:
     """Each call from `tool_calls` with `allowed` added. Allowed are Code Mode's plumbing, an
-    exec of one of the two bot scripts from the pinned clone on exactly the run dir, and
-    reading the scriptorium skill itself; every other call is not."""
-    return [{**c, "allowed": _allowed(c, run_dir)} for c in calls]
+    exec of one of the two bot scripts from the pinned clone on exactly the run dir, reading
+    the scriptorium skill itself, and a probe (`pwd`, `echo <plain words>`), which also gets
+    `"probe": True`; every other call is not."""
+    return [{**c, **_verdict(c, run_dir)} for c in calls]
 
 
 def _unzstd(blob: bytes) -> str:
@@ -387,44 +439,67 @@ def forget(session: str) -> None:
 
 
 def _write_fence(path: Path, record: dict, calls: list[dict]) -> bool:
-    """Write `record` with the fenced `calls` and their verdict `breach` to `path`, keeping
-    the record's key order; True on a breach. `ask` and `recheck` both write through here."""
+    """Write `record` with the fenced `calls`, their verdict `breach` and the count of
+    `probes` to `path`, keeping the record's key order; True on a breach. `ask`, `recap` and
+    `recheck` all write through here."""
     breach = not all(c["allowed"] for c in calls)
-    _write_text(path, json.dumps({**record, "breach": breach, "calls": calls}, ensure_ascii=False, indent=2) + "\n")
+    probes = sum(bool(c.get("probe")) for c in calls)
+    _write_text(path, json.dumps({**record, "breach": breach, "calls": calls, "probes": probes},
+                                 ensure_ascii=False, indent=2) + "\n")
     return breach
+
+
+def _say(run_dir: Path, book: str, text: str, thread: str, session: str) -> str:
+    """One turn of the session: `text` sent as a message in the thread; the agent's reply."""
+    with tempfile.TemporaryDirectory(prefix="scriptorium-eval-") as tmp:
+        message_file = Path(tmp) / "message.txt"
+        message_file.write_text(message(text, run_dir, thread, _thread_name(run_dir, book)), encoding="utf-8")
+        out = openclaw.call(["agent", "--agent", AGENT, "--session-id", session,
+                             "--message-file", str(message_file), "--json"])
+    return agent_reply(out)
+
+
+def _setup_stop(sid: str, reply: str) -> int:
+    print(f"{sid}: the bot gave a setup reply, nothing saved:")
+    print(reply.strip().splitlines()[-1] if reply.strip() else "(an empty reply)")
+    return 3
+
+
+def _fence_session(run_dir: Path, sid: str, session: str, path: Path, saved: str, done: str) -> int:
+    """Fence the session's calls into `path`; 0, or 4 when they cannot be read (no record)."""
+    try:
+        calls = fence_calls(tool_calls(session_events(session)), run_dir)
+    except FenceUnreadable as e:
+        print(f"{sid}: {saved} saved, but cannot check the fence: {e}")
+        return 4
+    breach = _write_fence(path, {"id": sid, "session": session}, calls)
+    print(f"{sid} {done} · fence {'breach' if breach else 'clean'}")
+    return 0
 
 
 def _ask_in(run_dir: Path, book: str, step: dict, thread: str, session: str) -> int:
     qid = step["id"]
-    with tempfile.TemporaryDirectory(prefix="scriptorium-eval-") as tmp:
-        message_file = Path(tmp) / "message.txt"
-        message_file.write_text(message(step["question"], run_dir, thread, _thread_name(run_dir, book)), encoding="utf-8")
-        out = openclaw.call(["agent", "--agent", AGENT, "--session-id", session,
-                             "--message-file", str(message_file), "--json"])
-    reply = agent_reply(out)
+    reply = _say(run_dir, book, step["question"], thread, session)
     if setup_reply(reply, book):
-        print(f"{qid}: the bot gave a setup reply, nothing saved:")
-        print(reply.strip().splitlines()[-1] if reply.strip() else "(an empty reply)")
-        return 3
+        return _setup_stop(qid, reply)
     save_answer(run_dir, book, qid, reply)
-    try:
-        calls = fence_calls(tool_calls(session_events(session)), run_dir)
-    except FenceUnreadable as e:
-        print(f"{qid}: answer saved, but cannot check the fence: {e}")
-        return 4
-    breach = _write_fence(fence_path(run_dir, book, qid), {"id": qid, "session": session}, calls)
-    print(f"{qid} answered · fence {'breach' if breach else 'clean'}")
-    return 0
+    return _fence_session(run_dir, qid, session, fence_path(run_dir, book, qid), "answer", "answered")
 
 
-def ask(run_dir: Path, book: str) -> int:
-    if os.environ.get("OPENCLAW_SHELL") == "exec":
-        print("run ask outside the bot's exec tool: openclaw agent refuses under OPENCLAW_SHELL=exec")
-        return 2
-    step = next_step(run_dir, book)
-    if step["step"] != "ask":
-        print(f"nothing to ask: the next step is {step['step']}")
-        return 2
+def _recap_in(run_dir: Path, book: str, step: dict, thread: str, session: str) -> int:
+    rid = step["id"]
+    reply = ""
+    for text in RECAP_TURNS:
+        reply = _say(run_dir, book, text, thread, session)
+        if setup_reply(reply, book):
+            return _setup_stop(rid, reply)
+    save_recap(run_dir, book, rid, reply)
+    return _fence_session(run_dir, rid, session, recap_fence_path(run_dir, book, rid), "recap", "recapped")
+
+
+def _in_session(run_dir: Path, book: str, step: dict,
+                play: Callable[[Path, str, dict, str, str], int]) -> int:
+    """Set the reader at the step's position, run `play` in a fresh session, then delete it."""
     thread = thread_for(run_dir, book)
     if thread is None:
         print(f"{run_dir / THREADS_FILE} records no thread for {book}")
@@ -440,7 +515,7 @@ def ask(run_dir: Path, book: str) -> int:
     session = f"scriptorium-eval-{book}-{step['id']}-{int(time.time())}"
     code = 2
     try:
-        code = _ask_in(run_dir, book, step, thread, session)
+        code = play(run_dir, book, step, thread, session)
     except openclaw.OpenClawError as e:
         print(f"{step['id']}: openclaw failed, nothing saved: {e}")
     finally:
@@ -451,10 +526,36 @@ def ask(run_dir: Path, book: str) -> int:
     return code
 
 
+def ask(run_dir: Path, book: str) -> int:
+    if os.environ.get("OPENCLAW_SHELL") == "exec":
+        print("run ask outside the bot's exec tool: openclaw agent refuses under OPENCLAW_SHELL=exec")
+        return 2
+    step = next_step(run_dir, book)
+    if step["step"] != "ask":
+        print(f"nothing to ask: the next step is {step['step']}")
+        return 2
+    return _in_session(run_dir, book, step, _ask_in)
+
+
+def ask_recap(run_dir: Path, book: str) -> int:
+    if os.environ.get("OPENCLAW_SHELL") == "exec":
+        print("run recap outside the bot's exec tool: openclaw agent refuses under OPENCLAW_SHELL=exec")
+        return 2
+    step = recap_next_step(run_dir, book)
+    if step["step"] != "ask":
+        print(f"nothing to recap: the next step is {step['step']}")
+        return 2
+    return _in_session(run_dir, book, step, _recap_in)
+
+
 def _fenceable(record: object) -> bool:
     calls = record.get("calls") if isinstance(record, dict) else None
     return isinstance(calls, list) and all(
         isinstance(c, dict) and isinstance(c.get("tool"), str) and isinstance(c.get("command"), str) for c in calls)
+
+
+def _probes(n: int) -> str:
+    return f"{n} probe" if n == 1 else f"{n} probes"
 
 
 def recheck(run_dir: Path, book: str) -> int:
@@ -485,22 +586,27 @@ def recheck(run_dir: Path, book: str) -> int:
     fenced = {}
     for path, record in records.items():
         try:
-            fenced[path] = fence_calls([{k: v for k, v in c.items() if k != "allowed"} for c in record["calls"]], run_dir)
+            fenced[path] = fence_calls([{k: v for k, v in c.items() if k not in ("allowed", "probe")}
+                                        for c in record["calls"]], run_dir)
         except OSError as e:
             print(f"bot.eval_bot recheck: fencing {path} failed, nothing rewritten: {e}", file=sys.stderr)
             return 2
-    breaches = flagged = 0
+    breaches = flagged = probes = 0
     for path, record in records.items():
         calls = fenced[path]
         breach = _write_fence(path, record, calls)
         breaches += breach
         flagged += sum(not c["allowed"] for c in calls)
+        probed = sum(bool(c.get("probe")) for c in calls)
+        probes += probed
         was = record.get("breach")
         line = f"{path.stem} fence {'breach' if breach else 'clean'}"
+        if probed:
+            line += f" · {_probes(probed)}"
         if isinstance(was, bool) and was != breach:
             line += f" (was {'breach' if was else 'clean'})"
         print(line)
-    print(f"{breaches} of {len(records)} records breach · {flagged} calls flagged · HOME {home}")
+    print(f"{breaches} of {len(records)} records breach · {flagged} calls flagged · {_probes(probes)} · HOME {home}")
     return 0
 
 
@@ -515,6 +621,9 @@ def main(argv: list[str] | None = None) -> int:
     p_ask = sub.add_parser("ask", help="ask the bot the current question")
     p_ask.add_argument("book", type=book_name)
     p_ask.add_argument("--data-dir", required=True, type=data_dir, help="the run dir")
+    p_recap = sub.add_parser("recap", help="ask the bot for the current recap")
+    p_recap.add_argument("book", type=book_name)
+    p_recap.add_argument("--data-dir", required=True, type=data_dir, help="the run dir")
     p_recheck = sub.add_parser("recheck", help="re-apply the fence to the run's saved records")
     p_recheck.add_argument("book", type=book_name)
     p_recheck.add_argument("--data-dir", required=True, type=data_dir, help="the run dir")
@@ -529,6 +638,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "recheck":
         return recheck(args.data_dir, args.book)
+    if args.command == "recap":
+        return ask_recap(args.data_dir, args.book)
     return ask(args.data_dir, args.book)
 
 

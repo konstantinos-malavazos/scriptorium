@@ -83,7 +83,8 @@ def test_a_thread_id_or_name_is_required(data, capsys):
     pytest.param(["find", "the fight", "--within", "ch 1", "--upto", "ch 2"], id="both limits"),
     pytest.param(["set", "ch 2", "--start", "--end"], id="start and end"),
     pytest.param(["place"], id="place with no section"),
-    pytest.param(["recap"], id="no such command"),
+    pytest.param(["refresh"], id="no such command"),
+    pytest.param(["recap", "ch 1"], id="recap takes no position"),
     pytest.param(["where", "--help"], id="help on a command"),
     pytest.param(["-h"], id="help on the script"),
 ])
@@ -228,6 +229,37 @@ def test_read_a_named_section_whole_or_refuse_one_past_the_reader(data, capsys):
     assert say(data, capsys, "read", "anything", "--section", "ch 3")[:2] == (3, PAST_LINE)
 
 
+def test_recap_needs_a_position(data, capsys):
+    assert say(data, capsys, "recap")[:2] == (3, NO_POSITION_LINE)
+
+
+def test_recap_outside_a_book_thread_exits_2(data, capsys):
+    assert say(data, capsys, "recap", thread=("--thread", "999")) == (2, NOT_A_BOOK_THREAD_LINE, "")
+
+
+def test_recap_opens_with_the_position_line_and_holds_nothing_past_it(data, capsys):
+    say(data, capsys, "set", "ch 2 · scene 1")
+    code, out, _ = say(data, capsys, "recap")
+    assert code == 0 and out.splitlines()[0] == "Up to ch 2 · scene 1:"
+    assert "[ch 1 · 1]" in out and "[ch 2 · 1]" in out
+    assert "ch 3" not in out and "Ilse" not in out and "thornwick" not in out
+    assert "so far" not in out.lower()
+
+
+def test_recap_stops_at_the_readers_scene(data, capsys):
+    say(data, capsys, "set", "ch 3 · scene 2")
+    code, out, _ = say(data, capsys, "recap")
+    assert code == 0 and out.splitlines()[0] == "Up to ch 3 · scene 2:"
+    assert "[ch 3 · 2]" in out and "[ch 3 · 3]" not in out
+
+
+def test_recap_rebuilds_a_cut_that_drifted_from_the_saved_position(data, capsys):
+    say(data, capsys, "set", "ch 2 · scene 1")
+    (data / BOOK / "cut" / "position.json").unlink()
+    assert say(data, capsys, "recap")[0] == 0
+    assert (data / BOOK / "cut" / "position.json").exists()
+
+
 # --- check ---
 
 def test_check_passes_a_cited_answer_and_the_fallback(data, capsys, monkeypatch):
@@ -336,6 +368,26 @@ def test_the_skill_answers_from_what_read_printed_and_keeps_the_one_fallback_wor
     for banned in ("isn't named", "not yet", "so far", "later"):
         assert banned not in rest, banned
     assert "read 'the captain'\\''s log'" in answering  # an apostrophe in the key words
+
+
+def test_the_skill_confirms_the_position_then_recaps_from_what_recap_printed():
+    text = SKILL.read_text(encoding="utf-8")
+    flat = " ".join(text.split())
+    assert '| "refresh me", "remind me what happened", "where were we?", `/recap` | `where`, then `recap`, then `check` |' in flat
+    recapping = flat.split("### Recapping")[1].split("## Setup")[0]
+    assert '"Last time: <section> · scene <k> — still there?"' in recapping
+    assert re.search(r"python3 -m bot\.discuss recap --thread ", text)
+    assert "line 1 is exactly the first line `recap` printed" in recapping
+    assert "about 300 to 400 words" in recapping and "never write `[chapter 0]`" in recapping
+    assert "never list the book's sections" in recapping
+    assert "`place 'ch 9'`" in recapping and "`read --section" in recapping and "`read 'Kell'`" in recapping
+    assert "story so far" not in flat.casefold()
+
+
+def test_the_skill_sends_the_answer_to_check_only_through_the_quoted_heredoc():
+    flat = " ".join(SKILL.read_text(encoding="utf-8").split())
+    assert ("The answer reaches `check` only through this quoted heredoc: never through `printf`, "
+            "`echo … | base64 -d`, any other pipe or a temporary file.") in flat
 
 
 def quoted(text: str) -> str:

@@ -4,12 +4,14 @@ import json
 import pytest
 
 from core.cut import parse_position
-from core.evaluate import (book_text, check_question, eval_dir, main, parse_judgement,
-                           verify_questions)
+from core.evaluate import (book_text, check_question, eval_dir, main, parse_judgement, recap_fence_path,
+                           recap_positions, save_recap, verify_questions)
+from core.extract import run
 from core.split import load_approved
-from tests.index_fixture import fixture_split, write_split
+from tests.index_fixture import StubWorker, fixture_split, write_split
 
 BOOK = "fx"
+INSTRUCTIONS = "# Worker instructions\n\nReply with one JSON object."
 FIRST = ("ch 1 · scene 1", "crossed the quillfeather bridge", ["ch 1"])
 SECOND = ("ch 2 · scene 1", "polished brambleglass lenses", ["ch 2"])
 THIRD = ("ch 3 · scene 1", "the salt widow", ["ch 3"])
@@ -434,3 +436,130 @@ def test_four_alias_traps_leave_the_score_line_and_file_without_a_note(capsys, m
     _, line, _ = score_of(capsys, monkeypatch, saved)
     assert "alias traps" not in line
     assert "alias_note" not in json.loads((eval_dir(saved, BOOK) / "score.json").read_text(encoding="utf-8"))
+
+
+# --- recaps ---
+
+POSITIONS = ["ch 1 · scene 2", "ch 3 · scene 1", "ch 3 · scene 3"]
+CLEAN = "Tamsin Rook crossed the bridge [ch 1 · 1]."
+NO_LEAK = json.dumps({"leak": False, "reason": "every fact is behind the position"})
+
+
+@pytest.fixture
+def indexed(data):
+    run(data, BOOK, INSTRUCTIONS, StubWorker())
+    return data
+
+
+def recap_next(capsys, monkeypatch, data):
+    code, out, _ = cli(capsys, monkeypatch, "recap-next", BOOK, "--data-dir", str(data))
+    assert code == 0
+    return json.loads(out)
+
+
+def fence(data, rid, breach=False):
+    path = recap_fence_path(data, BOOK, rid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"id": rid, "session": "s", "breach": breach, "calls": []}), encoding="utf-8")
+
+
+def recap_loop(capsys, monkeypatch, data, recaps=None, judgements=None, breaches=()):
+    """Answer and judge every recap step; `recaps` / `judgements` override by id."""
+    recaps, judgements = recaps or {}, judgements or {}
+    while (step := recap_next(capsys, monkeypatch, data))["step"] != "done":
+        rid = step["id"]
+        if step["step"] == "ask":
+            save_recap(data, BOOK, rid, recaps.get(rid, f"Up to {step['position']}:\n{CLEAN}\n"))
+            fence(data, rid, rid in breaches)
+        else:
+            code, _, _ = cli(capsys, monkeypatch, "recap-judge", BOOK, rid, "--data-dir", str(data),
+                             stdin=judgements.get(rid, NO_LEAK))
+            assert code == 0
+
+
+def recap_score_of(capsys, monkeypatch, data):
+    code, out, err = cli(capsys, monkeypatch, "recap-score", BOOK, "--data-dir", str(data))
+    return code, out.strip(), err
+
+
+def test_recap_positions_are_the_middle_scene_of_each_third_of_the_scenes(approved):
+    assert recap_positions(approved) == POSITIONS
+
+
+def test_each_recap_is_asked_then_judged_with_the_material_and_later_summaries(capsys, monkeypatch, indexed):
+    assert recap_next(capsys, monkeypatch, indexed) == {"step": "ask", "id": "r1", "position": POSITIONS[0]}
+    save_recap(indexed, BOOK, "r1", f"Up to ch 1 · scene 2:\n{CLEAN}\n")
+    step = recap_next(capsys, monkeypatch, indexed)
+    assert (step["step"], step["id"]) == ("judge", "r1")
+    head, _, recap = step["message"].partition("\nrecap:\n")
+    material, _, later = head.partition("\nlater:\n")
+    assert material.startswith("position: ch 1 · scene 2\nmaterial:\nUp to ch 1 · scene 2:\n")
+    assert "quillfeather" in material and "brambleglass" not in material and "thornwick" not in material
+    assert "- ch 2 · 1: Corvin Ashby does the brambleglass work in ch 2" in later
+    assert "- ch 1 · 2:" not in later and "- ch 3 · 3:" in later
+    assert recap == f"Up to ch 1 · scene 2:\n{CLEAN}"
+    cli(capsys, monkeypatch, "recap-judge", BOOK, "r1", "--data-dir", str(indexed), stdin=NO_LEAK)
+    assert recap_next(capsys, monkeypatch, indexed) == {"step": "ask", "id": "r2", "position": POSITIONS[1]}
+
+
+def test_only_the_current_recap_step_can_be_saved(capsys, monkeypatch, indexed):
+    with pytest.raises(ValueError, match="not the current recap step"):
+        save_recap(indexed, BOOK, "r2", "x")
+    code, _, err = cli(capsys, monkeypatch, "recap-judge", BOOK, "r1", "--data-dir", str(indexed), stdin=NO_LEAK)
+    assert code == 2 and "current: ask r1" in err
+
+
+@pytest.mark.parametrize("reply", ['{"leak": "no", "reason": "x"}', '{"leak": false}',
+                                   '{"leak": false, "reason": "x", "verdict": "right"}', "not json"])
+def test_a_malformed_recap_judgement_is_rejected_and_not_saved(capsys, monkeypatch, indexed, reply):
+    save_recap(indexed, BOOK, "r1", f"Up to ch 1 · scene 2:\n{CLEAN}\n")
+    code, _, err = cli(capsys, monkeypatch, "recap-judge", BOOK, "r1", "--data-dir", str(indexed), stdin=reply)
+    assert code == 1 and err
+    assert recap_next(capsys, monkeypatch, indexed)["step"] == "judge"
+
+
+def test_a_clean_run_passes_and_keeps_out_of_the_question_files(capsys, monkeypatch, indexed):
+    recap_loop(capsys, monkeypatch, indexed)
+    code, line, _ = recap_score_of(capsys, monkeypatch, indexed)
+    assert (code, line) == (0, "recaps: 3/3 · leaks 0 · later citations 0 · fence breaches 0 · words 9, 9, 9")
+    folder = eval_dir(indexed, BOOK)
+    assert sorted(p.name for p in folder.iterdir()) == ["recap-fence", "recap-judgements", "recap-score.json",
+                                                         "recaps"]
+    saved_score = json.loads((folder / "recap-score.json").read_text(encoding="utf-8"))
+    assert saved_score["passed"] is True and [r["id"] for r in saved_score["results"]] == ["r1", "r2", "r3"]
+    code, _, err = cli(capsys, monkeypatch, "next", BOOK, "--data-dir", str(indexed))
+    assert code == 2 and "no questions yet" in err
+
+
+def test_a_judged_leak_or_a_fence_breach_fails(capsys, monkeypatch, indexed):
+    leak = json.dumps({"leak": True, "reason": "names a later death"})
+    recap_loop(capsys, monkeypatch, indexed, judgements={"r2": leak}, breaches={"r3"})
+    code, line, _ = recap_score_of(capsys, monkeypatch, indexed)
+    assert (code, line) == (1, "recaps: 3/3 · leaks 1 · later citations 0 · fence breaches 1 · words 9, 9, 9")
+
+
+def test_a_recap_failing_the_cut_check_is_not_judged_and_its_later_citations_count(capsys, monkeypatch, indexed):
+    bad = "Up to ch 1 · scene 2:\nCorvin polished lenses [ch 2 · 1] and Ilse left [ch 3 · 3].\n"
+    recap_loop(capsys, monkeypatch, indexed, recaps={"r1": bad})
+    assert not (eval_dir(indexed, BOOK) / "recap-judgements" / "r1.json").exists()
+    code, line, _ = recap_score_of(capsys, monkeypatch, indexed)
+    assert code == 1 and line.startswith("recaps: 2/3 · leaks 0 · later citations 2 · fence breaches 0")
+    r1 = json.loads((eval_dir(indexed, BOOK) / "recap-score.json").read_text(encoding="utf-8"))["results"][0]
+    assert (r1["why"], r1["checked"], r1["leak"]) == ("failed check", False, False)
+
+def test_recap_score_fails_when_no_recap_passed_the_cut_check(capsys, monkeypatch, indexed):
+    bad = "no header and nothing to cite\n"
+    recap_loop(capsys, monkeypatch, indexed, recaps={"r1": bad, "r2": bad, "r3": bad})
+    code, line, _ = recap_score_of(capsys, monkeypatch, indexed)
+    assert (code, line) == (1, "recaps: 0/3 · leaks 0 · later citations 0 · fence breaches 0 · words 0, 0, 0")
+    saved = json.loads((eval_dir(indexed, BOOK) / "recap-score.json").read_text(encoding="utf-8"))
+    assert saved["passed"] is False
+
+
+def test_recap_score_exits_2_until_finished_or_without_a_fence_record(capsys, monkeypatch, indexed):
+    code, _, err = recap_score_of(capsys, monkeypatch, indexed)
+    assert code == 2 and "not finished: ask r1" in err
+    recap_loop(capsys, monkeypatch, indexed)
+    recap_fence_path(indexed, BOOK, "r2").unlink()
+    code, _, err = recap_score_of(capsys, monkeypatch, indexed)
+    assert code == 2 and "no fence record for r2" in err

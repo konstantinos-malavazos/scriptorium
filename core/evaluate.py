@@ -7,9 +7,19 @@ state and the score. No model is called here; the evaluate-book skill runs the a
     python -m core.evaluate answer <book> <id> [--data-dir DIR]   (what /ask-book replied, on stdin)
     python -m core.evaluate judge <book> <id> [--data-dir DIR]    (the judge's reply, on stdin)
     python -m core.evaluate score <book> [--data-dir DIR]
+    python -m core.evaluate recap-next <book> [--data-dir DIR]
+    python -m core.evaluate recap-judge <book> <id> [--data-dir DIR]   (the recap judge's reply, on stdin)
+    python -m core.evaluate recap-score <book> [--data-dir DIR]
 
 State lives under <data-dir>/<book>/eval/: book.txt, questions.json, answers/<id>.txt,
 judgements/<id>.json, score.json. A step whose file exists is done, so `next` resumes.
+
+The recap pass is kept apart from the questions: ids r1..r3 at recap_positions, with
+recaps/<id>.md (saved by the bot driver through save_recap), recap-fence/<id>.json,
+recap-judgements/<id>.json and recap-score.json. `recap-next` prints {"step": "ask", "id",
+"position"}, {"step": "judge", "id", "message"} or {"step": "done"}; `recap-judge` prints
+{"saved": <id>}; `recap-score` prints one line and exits 0 at no leak, no later citation and
+no fence breach, else 1.
 
 `book` prints {"book": <abs path>}. `questions` saves the file and prints {"questions": <abs
 path>, "count": n}, or prints one error per line to stderr. `next` prints one JSON line:
@@ -31,9 +41,9 @@ import re
 import sys
 from pathlib import Path
 
-from core.brief import Position
-from core.cut import check_answer, citations, parse_position
-from core.extract import _write_text, slots
+from core.brief import Position, build_recap, render_recap
+from core.cut import check_answer, citations, parse_position, position_line
+from core.extract import _write_text, read_outputs, slots
 from core.split import DEFAULT_DATA_DIR, SplitNotApproved, load_approved
 from core.validate import normalise, parse_reply
 
@@ -55,6 +65,7 @@ TOP_FIELDS = ("book", "questions")
 TOP_OPTIONAL = ("alias_note",)
 JUDGEMENT_FIELDS = ("verdict", "leak", "reason")
 VERDICTS = ("right", "wrong")
+RECAP_JUDGEMENT_FIELDS = ("leak", "reason")
 
 _ID = re.compile(r"[A-Za-z0-9_-]+\Z")
 _THIRDS = ("early", "middle", "late")
@@ -74,6 +85,19 @@ def _answer_path(data_dir: str | os.PathLike[str], book: str, qid: str) -> Path:
 
 def _judgement_path(data_dir: str | os.PathLike[str], book: str, qid: str) -> Path:
     return eval_dir(data_dir, book) / "judgements" / f"{qid}.json"
+
+
+def _recap_path(data_dir: str | os.PathLike[str], book: str, rid: str) -> Path:
+    return eval_dir(data_dir, book) / "recaps" / f"{rid}.md"
+
+
+def _recap_judgement_path(data_dir: str | os.PathLike[str], book: str, rid: str) -> Path:
+    return eval_dir(data_dir, book) / "recap-judgements" / f"{rid}.json"
+
+
+def recap_fence_path(data_dir: str | os.PathLike[str], book: str, rid: str) -> Path:
+    """Where the bot's fence record for one recap lives; same shape as a question's."""
+    return eval_dir(data_dir, book) / "recap-fence" / f"{rid}.json"
 
 
 def _labels(approved: dict) -> dict[int, str]:
@@ -446,6 +470,135 @@ def score(data_dir: str | os.PathLike[str], book: str) -> dict:
     return result
 
 
+def recap_positions(approved: dict) -> list[str]:
+    """The middle story scene of each third of the book's scenes, in reading order."""
+    scenes = [Position(s.order, k) for s in slots(approved) if not s.chapter0 for k in range(1, len(s.scenes) + 1)]
+    thirds: list[list[Position]] = [[] for _ in _THIRDS]
+    for i, at in enumerate(scenes):
+        thirds[i * len(_THIRDS) // len(scenes)].append(at)
+    return [_position_text(approved, third[len(third) // 2]) for third in thirds if third]
+
+
+def _recaps(approved: dict) -> list[tuple[str, str]]:
+    return [(f"r{i}", position) for i, position in enumerate(recap_positions(approved), 1)]
+
+
+def _recap_judge_message(data_dir: str | os.PathLike[str], book: str, approved: dict, at: Position,
+                         recap: str) -> str:
+    """The position, the material the bot was given, every indexed scene summary after the
+    position, and the recap last."""
+    chapter0, sections = read_outputs(data_dir, book, approved, at)
+    material = render_recap(build_recap(chapter0, sections, at), position_line(_labels(approved)[at.order], at.scene))
+    _, everything = read_outputs(data_dir, book, approved, Position(max(_labels(approved)), 0))
+    later = [f"- {label} · {s['scene']}: {_one_line(s['summary'])}"
+             for order, label, record in everything for s in record["scenes"] if (order, s["scene"]) > at]
+    return "\n".join([f"position: {_position_text(approved, at)}", "material:", material.strip(),
+                      "later:", *(later or ["(nothing)"]), "recap:", recap.strip()])
+
+
+def recap_next_step(data_dir: str | os.PathLike[str], book: str) -> dict:
+    """{"step": "ask", "id", "position"}, {"step": "judge", "id", "message"} or {"step": "done"}.
+
+    A recap that fails the cut check is never judged, as in next_step; recap_score reports it.
+    """
+    approved = load_approved(data_dir, book)
+    for rid, position in _recaps(approved):
+        path = _recap_path(data_dir, book, rid)
+        if not path.exists():
+            return {"step": "ask", "id": rid, "position": position}
+        recap = path.read_text(encoding="utf-8")
+        at = parse_position(approved, position)
+        if not check_answer(recap, approved, at) and not _recap_judgement_path(data_dir, book, rid).exists():
+            return {"step": "judge", "id": rid, "message": _recap_judge_message(data_dir, book, approved, at, recap)}
+    return {"step": "done"}
+
+
+def _require_recap_current(data_dir: str | os.PathLike[str], book: str, step: str, rid: str) -> None:
+    current = recap_next_step(data_dir, book)
+    if current["step"] != step or current["id"] != rid:
+        now = f"{current['step']} {current['id']}" if "id" in current else current["step"]
+        raise ValueError(f"{step} {rid} is not the current recap step (current: {now})")
+
+
+def save_recap(data_dir: str | os.PathLike[str], book: str, rid: str, recap: str) -> None:
+    """Save the bot's recap for the current recap ask step, verbatim. Raises ValueError otherwise."""
+    _require_recap_current(data_dir, book, "ask", rid)
+    _write_text(_recap_path(data_dir, book, rid), recap)
+
+
+def parse_recap_judgement(text: str) -> tuple[dict | None, list[str]]:
+    """The recap judge's reply as {leak, reason}, or (None, errors)."""
+    body = text.strip()
+    if "\n" in body:
+        return None, ["reply with one JSON line and nothing else"]
+    try:
+        obj = json.loads(body)
+    except json.JSONDecodeError as e:
+        return None, [f"the reply is not valid JSON ({e.msg}); reply with one JSON line and nothing else"]
+    if not isinstance(obj, dict):
+        return None, ["the reply must be one JSON object"]
+    errors = [f'missing field "{f}"' for f in RECAP_JUDGEMENT_FIELDS if f not in obj]
+    errors += [f'unknown field "{k}"' for k in obj if k not in RECAP_JUDGEMENT_FIELDS]
+    if "leak" in obj and not isinstance(obj["leak"], bool):
+        errors.append('"leak" must be true or false')
+    if "reason" in obj and (not isinstance(obj["reason"], str) or not obj["reason"].strip()):
+        errors.append('"reason" must be a non-empty string')
+    return (None, errors) if errors else (obj, [])
+
+
+def save_recap_judgement(data_dir: str | os.PathLike[str], book: str, rid: str, reply: str) -> list[str]:
+    """Validate and save the recap judge's reply for the current judge step; returns the errors
+    (saved iff none). Raises ValueError when `rid` is not the current recap judge step."""
+    _require_recap_current(data_dir, book, "judge", rid)
+    judgement, errors = parse_recap_judgement(reply)
+    if judgement is None:
+        return errors
+    _write_text(_recap_judgement_path(data_dir, book, rid), json.dumps(judgement, ensure_ascii=False) + "\n")
+    return []
+
+
+def recap_score(data_dir: str | os.PathLike[str], book: str) -> dict:
+    """Score the finished recaps and save recap-score.json. Raises ValueError while steps remain
+    or a recap has no fence record. Passes when every recap passed the cut check and was judged, with no leak, no later
+    citation and no fence breach;
+    the word count is reported only."""
+    approved = load_approved(data_dir, book)
+    current = recap_next_step(data_dir, book)
+    if current["step"] != "done":
+        raise ValueError(f"not finished: {current['step']} {current['id']} is next; run recap-next")
+    order_of = {label: order for order, label in _labels(approved).items()}
+    results = []
+    for rid, position in _recaps(approved):
+        fence = recap_fence_path(data_dir, book, rid)
+        if not fence.exists():
+            raise ValueError(f"no fence record for {rid}: {fence}")
+        at = parse_position(approved, position)
+        recap = _recap_path(data_dir, book, rid).read_text(encoding="utf-8")
+        later = sum(1 for label, k in citations(recap)
+                    if k is not None and label in order_of and (order_of[label], k) > at)
+        judged = _recap_judgement_path(data_dir, book, rid)
+        judgement = json.loads(judged.read_text(encoding="utf-8")) if judged.exists() else None
+        results.append({
+            "id": rid, "position": position, "checked": judgement is not None,
+            "leak": bool(judgement and judgement["leak"]),
+            "why": judgement["reason"] if judgement else "failed check",
+            "later_citations": later,
+            "breach": bool(json.loads(fence.read_text(encoding="utf-8"))["breach"]),
+            "words": len(recap.strip().partition("\n")[2].split()),
+        })
+    checked = sum(r["checked"] for r in results)
+    leaks = sum(r["leak"] for r in results)
+    later = sum(r["later_citations"] for r in results)
+    breaches = sum(r["breach"] for r in results)
+    passed = checked == len(results) and leaks == 0 and later == 0 and breaches == 0
+    line = (f"recaps: {checked}/{len(results)} · leaks {leaks} · later citations {later} · "
+            f"fence breaches {breaches} · words {', '.join(str(r['words']) for r in results)}")
+    result = {"book": book, "checked": checked, "recaps": len(results), "leaks": leaks, "later_citations": later,
+              "breaches": breaches, "passed": passed, "line": line, "results": results}
+    _write_text(eval_dir(data_dir, book) / "recap-score.json", json.dumps(result, ensure_ascii=False, indent=1) + "\n")
+    return result
+
+
 def _question_id(value: str) -> str:
     if not _ID.match(value):
         raise argparse.ArgumentTypeError(f"id may hold only letters, digits, '-' and '_': {value!r}")
@@ -483,7 +636,16 @@ def _run(args: argparse.Namespace, data_dir: Path) -> int:
             return _print_errors(errors)
         print(json.dumps({"saved": args.id}))
         return 0
-    result = score(data_dir, args.book)
+    if args.command == "recap-next":
+        print(json.dumps(recap_next_step(data_dir, args.book), ensure_ascii=False))
+        return 0
+    if args.command == "recap-judge":
+        errors = save_recap_judgement(data_dir, args.book, args.id, sys.stdin.read())
+        if errors:
+            return _print_errors(errors)
+        print(json.dumps({"saved": args.id}))
+        return 0
+    result = recap_score(data_dir, args.book) if args.command == "recap-score" else score(data_dir, args.book)
     print(result["line"])
     return 0 if result["passed"] else 1
 
@@ -498,11 +660,14 @@ def main(argv: list[str] | None = None) -> int:
         "answer": "save what /ask-book replied (stdin) for the current ask step",
         "judge": "check and save the judge's reply (stdin); exit 0 saved, 1 rejected",
         "score": "print the score; exit 0 pass, 1 fail",
+        "recap-next": "print the next recap ask or judge step",
+        "recap-judge": "check and save the recap judge's reply (stdin); exit 0 saved, 1 rejected",
+        "recap-score": "print the recap score; exit 0 pass, 1 fail",
     }
     for name, help_text in commands.items():
         cmd = sub.add_parser(name, help=help_text)
         cmd.add_argument("book")
-        if name in ("answer", "judge"):
+        if name in ("answer", "judge", "recap-judge"):
             cmd.add_argument("id", type=_question_id)
         cmd.add_argument("--data-dir", default=DEFAULT_DATA_DIR, help="parent of the per-book folders")
     args = parser.parse_args(argv)

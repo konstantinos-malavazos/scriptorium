@@ -4,7 +4,8 @@ description: >-
   Score the reading bot's own answers on the questions already written for a book, beside
   Claude Code's score: each question is asked of the bot through its real agent, a new
   judge sub-agent rates each answer, and code prints the verdict against Claude's score
-  (pass at Claude's accuracy minus 3 and no leak). Resumes where a run stopped. Use on
+  (pass at Claude's accuracy minus 3 and no leak). The bot also writes a recap at 3
+  positions, each checked for leaks by a new recap-judge sub-agent. Resumes where a run stopped. Use on
   "/evaluate-bot <book> <run> [label]" or "evaluate the bot on <book>". Needs the book
   evaluated by /evaluate-book first and indexed in the bot's data.
 ---
@@ -29,15 +30,16 @@ Run every command from the repository root. Each attempt has a run folder of its
 - **Do not read anything under `index/<book>/`, the run folder or `books/`.** They hold
   the whole book and its spoilers. You pass paths and text on; the agents and the code
   read them.
-- **Answer and judge nothing yourself.** Every answer comes from `bot.eval_bot ask`, every
-  verdict from a `judge`, the score from code. Never use `ask-book`:
+- **Answer and judge nothing yourself.** Every answer comes from `bot.eval_bot ask` and
+  every recap from `bot.eval_bot recap`, every verdict from a `judge` or a `recap-judge`,
+  the scores from code. Never use `ask-book`:
   it answers from Claude's index, not the bot's.
-- **Every judge attempt is a new dispatch.** Never resume or message an earlier one.
+- **Every judge and recap-judge attempt is a new dispatch.** Never resume or message an earlier one.
 - **Quote arguments for the shell.** Pass `<book>`, `<id>` inside single quotes. Pass a
   reply on stdin through a quoted heredoc, as shown below.
 - **Decode each JSON line before you use it.** Take `step`, `id` and `message` from the
   decoded object; never match the raw text.
-- **Run `ask` through `docker exec` exactly as shown, with no `-e` flag.** Never set
+- **Run `ask` and `recap` through `docker exec` exactly as shown, with no `-e` flag.** Never set
   `OPENCLAW_SHELL`.
 - **Post nothing and re-index nothing.** A re-index for a revision round needs the
   owner's go-ahead at that time; ask, and wait.
@@ -97,7 +99,47 @@ not exist yet.
    - Exit 1, on the retry: stop. Report the id and the errors. Running
      `/evaluate-bot <book> <run> [label]` again resumes at this judge step.
    - Exit 2: stop, and report its stderr.
-4. On `"step": "done"`: go to the score.
+4. On `"step": "done"`: go to the recaps.
+
+## The recaps
+
+The bot recaps the story up to 3 positions the evaluator picks. Each recap is two turns
+with the bot: the reader asks to be refreshed, and confirms the saved position when the
+bot asks. `bot.eval_bot recap` plays both turns and saves the bot's last reply.
+
+1. Run:
+   ```
+   uv run --python 3.11 --no-project python -m core.evaluate recap-next '<book>' --data-dir ~/.openclaw/scriptorium-eval/<run>-<label>
+   ```
+   Exit 2: stop, and report its stderr.
+2. On `"step": "ask"`: the driver reads the position itself. Run:
+   ```
+   docker exec openclaw-openclaw-gateway-1 bash -c "cd ~/code/scriptorium && python3 -m bot.eval_bot recap '<book>' --data-dir ~/.openclaw/scriptorium-eval/<run>-<label>"
+   ```
+   - Exit 0: the recap is saved. Print `<id> recapped`, and go to step 1.
+   - Any other exit: stop, and report the id, the exit code and the last line it printed.
+     Exit 3 means the bot replied with a setup line instead of a recap; exit 4 means the
+     recap is saved but its tool calls could not be checked. Save nothing yourself.
+3. On `"step": "judge"`: dispatch a **new** `recap-judge` sub-agent whose message is the
+   decoded `message`, exactly. Wait for its reply, then save it exactly as received:
+   ```
+   uv run --python 3.11 --no-project python -m core.evaluate recap-judge '<book>' '<id>' --data-dir ~/.openclaw/scriptorium-eval/<run>-<label> <<'END_OF_JUDGEMENT'
+   <reply>
+   END_OF_JUDGEMENT
+   ```
+   - Exit 0: print `<id> judged`, and go to step 1.
+   - Exit 1, first attempt: dispatch a **new** `recap-judge` with the errors on stderr
+     before the same message, as in the loop. Then save its reply as above.
+   - Exit 1, on the retry: stop. Report the id and the errors. Running
+     `/evaluate-bot <book> <run> [label]` again resumes at this step.
+   - Exit 2: stop, and report its stderr.
+4. On `"step": "done"`: run
+   ```
+   uv run --python 3.11 --no-project python -m core.evaluate recap-score '<book>' --data-dir ~/.openclaw/scriptorium-eval/<run>-<label>
+   ```
+   Exit 0 (no leak) and exit 1 (a leak, a later citation or a fence breach) both mean it
+   scored; keep its line for the draft and go to the score. Exit 2: stop, and report its
+   stderr.
 
 ## The score
 
@@ -134,7 +176,7 @@ not exist yet.
    It prints `continue` (exit 0) or `stop: <reason>` (exit 1). Exit 2: stop, and report
    its stderr.
 5. Draft the tracker comment, and do not post it. Write the verdict line, then the
-   `rounds` line if there is one, to `.claude/handoffs/evaluate-bot/<book>-<run>-<label>-comment.md`.
+   `rounds` line if there is one, then the `recap-score` line, to `.claude/handoffs/evaluate-bot/<book>-<run>-<label>-comment.md`.
 6. Print the verdict line, exactly, as the last thing you say, then the path of the draft.
 
 ## When you stop early
