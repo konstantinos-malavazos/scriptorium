@@ -175,6 +175,8 @@ When the reader asks to be reminded of the story ("refresh me", "remind me what 
    cd ~/.openclaw/tools/scriptorium && python3 -m bot.discuss recap --thread <this thread's id> --thread-name '<this thread's name>' --parent <the parent channel's id> --data-dir ~/.openclaw/scriptorium
    ```
 
+   Read the `recap` output exactly as printed; never redirect it to a file or run it again to read it in pieces.
+
 4. Write the recap from the `recap` output alone, about 300 to 400 words, never from what
    you know about the book:
    - line 1 is exactly the first line `recap` printed, for example `Up to ch 6 · scene 3:`;

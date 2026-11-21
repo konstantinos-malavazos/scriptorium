@@ -13,8 +13,8 @@ from typing import NamedTuple
 RECENT_SECTIONS = 3
 RECAP_KEY_MAX = 8
 CHAPTER0_LABEL = "chapter 0"
-RECAP_WHOLE_BUDGET = 6000
-RECAP_RECENT_BUDGET = 9000
+RECAP_WHOLE_BUDGET = 4500
+RECAP_RECENT_BUDGET = 6500
 EARLIER_NOTE = "(Some scene lines are left out here to fit; read the sections by name for more.)"
 
 _SENTENCE_END = re.compile(r"[.!?][\"'”’»)]*(?=\s|$)")

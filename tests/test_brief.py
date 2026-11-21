@@ -194,7 +194,7 @@ def split_blocks(out):
 
 
 def test_render_recap_whole_story_block_covers_only_the_sections_before_the_recent_ones():
-    assert (RECAP_WHOLE_BUDGET, RECAP_RECENT_BUDGET) == (6000, 9000)
+    assert (RECAP_WHOLE_BUDGET, RECAP_RECENT_BUDGET) == (4500, 6500)
     whole, recent, _ = split_blocks(render_recap(recap_at(4, 1), "Up to ch 4 · scene 1:"))
     assert whole == "### ch 1\n\n- [ch 1 · 1] Tamsin crosses."
     assert all(f"### ch {o}" in recent for o in (2, 3, 4)) and "### ch 1" not in recent
@@ -254,7 +254,7 @@ def test_render_recap_drops_the_oldest_recent_scenes_when_summaries_alone_exceed
 
 def test_render_recap_hands_the_scenes_the_recent_block_drops_to_the_whole_story_block():
     def sec(o):
-        return (o, f"ch {o}", record(f"ch {o}", *[scene(k, f"S{o}k{k} " + "word " * 200 + ".") for k in range(1, 6)]))
+        return (o, f"ch {o}", record(f"ch {o}", *[scene(k, f"S{o}k{k} " + "word " * 100 + ".") for k in range(1, 6)]))
     recap = build_recap(None, [sec(o) for o in range(1, 7)], Position(7, 0))
     whole, recent, _ = split_blocks(render_recap(recap, "Up to ch 7 · scene 0:"))
     assert len(recent) <= RECAP_RECENT_BUDGET and len(whole) <= RECAP_WHOLE_BUDGET
