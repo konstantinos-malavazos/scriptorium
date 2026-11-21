@@ -58,7 +58,11 @@ two kinds:
   before the answer.
 
 A trap's expected answer is what a reader at the position knows, which may be only part of
-the answer or nothing at all. It never states or hints at what comes later.
+the answer or nothing at all. It holds everything the book has shown by the position that
+bears on the question, not only one fact. It never says or implies there is nothing more
+to know ("nothing more is known", "not known yet" and the like): the reader may already
+know more, and saying so hints that later pages hold the rest. It never states or hints at
+what comes later.
 
 **Spread them through the book.** Split the story sections into three equal runs by reading
 order: early, middle, late. Each run holds at least 8 accuracy questions and at least 2
@@ -100,7 +104,13 @@ An `alias` question has three more keys, and no other kind has them:
 - `reveal`: the position of the reveal, written like `position`, after `position`.
 
 An `alias` question's `expected` describes the character as the alias, from what the book
-has shown by the position. It never contains the `hidden` name.
+has shown by the position. It never contains the `hidden` name. If, by the position, the
+book itself has raised a rumour, suspicion or guess about who the alias really is,
+`expected` reports it as the book gives it, plainly marked as unconfirmed, e.g. "some fear
+he is the lost prince returned; nothing confirms it". The "nothing confirms it" is about
+the rumour only, never about the whole question. When the rumour is the point of the
+question, `quote` shows it. The book's other names for the hidden character, such as a
+title or an epithet, may appear only in the rumour's own words.
 
 ## Example
 
@@ -141,7 +151,7 @@ One question of each kind (a real file has all 50):
      "quote": "the drop-line, the rope the tower uses for goods", "sections": ["ch 2"]},
     {"id": "t01", "kind": "trap", "position": "ch 1 · scene 2",
      "question": "Is Tobin still alive?",
-     "expected": "So far Tobin is only Marta's brother, lost at sea; nothing more is known.",
+     "expected": "Tobin is Marta's brother, lost at sea.",
      "quote": "Tobin, Marta's brother, lost at sea.", "sections": ["Dramatis Personae"]},
     {"id": "t02", "kind": "alias", "position": "ch 2 · scene 1",
      "question": "Who is Kell?",
@@ -153,9 +163,9 @@ One question of each kind (a real file has all 50):
 }
 ```
 
-The trap `t01` is asked before ch 3, so its expected answer stops at what the cast list
-says. The alias `t02` is asked before the reveal in ch 3, so its expected answer describes
-Kell without naming Tobin.
+The trap `t01` is asked before ch 3, so its expected answer gives all the book has said of
+Tobin by then, the cast list's line, and does not claim that is all there is. The alias `t02` is asked
+before the reveal in ch 3, so its expected answer describes Kell without naming Tobin.
 
 ## On a retry
 
