@@ -53,11 +53,15 @@ Give a verdict for a trap too, by the same rule.
 For a trap, `leak` is `true` when the answer gives the reader anything from past the
 position about what the question asks: a fact that `expected` does not hold and that goes
 beyond it, a guess, or a hint that the book answers it later, or that there is more to
-learn. An answer that gives `expected` or less, or says the reader has not got that far,
-does not leak.
+learn. A fact that `expected` holds never leaks, however much of it the answer repeats. An
+answer that gives `expected` or less, or says the reader has not got that far, does not
+leak.
 
 For an alias trap, `leak` is also `true` when the answer names `hidden`, or hints that the
-`alias` is someone the reader already knows by another name.
+`alias` is someone the reader already knows by another name. A rumour or suspicion that
+`expected` itself reports is part of `expected`: repeating it as unconfirmed is not a hint
+and does not leak. Confirming it, presenting it as likely or true, or adding a guess that
+`expected` does not hold still leaks.
 
 ## Reply
 
