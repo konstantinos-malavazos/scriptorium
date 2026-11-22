@@ -211,6 +211,14 @@ def test_instructions_ask_a_relisted_term_for_its_full_current_meaning():
     assert "full current meaning" in " ".join(instructions().split())
 
 
+def test_instructions_ask_for_who_a_character_is_explained_terms_and_stated_content():
+    text = " ".join(instructions().split())
+    for rule in ("says who the character is", "A line of actions alone is not enough",
+                 "any word or phrase the text explains or defines", "a second name this scene gives",
+                 "an event records what it holds", "says who does what to whom"):
+        assert rule in text, rule
+
+
 def test_question_writer_is_pinned_to_opus_at_high_with_read_only():
     fields = frontmatter(WRITER)
     assert fields["name"] == "question-writer"
