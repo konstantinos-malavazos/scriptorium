@@ -38,10 +38,16 @@ Each scene object has exactly these keys, all required, no others:
 - `summary`: what happens in this scene and nothing after it. One to three sentences,
   about 20 to 60 words. Never empty.
 - `events`: the scene's plot events in order, each a short phrase. At least one.
+  When the scene states what a dream, vision, message, plan or conclusion holds, an event
+  records what it holds, not only that it happened: "the dream shows the city burning",
+  not "refuses to reveal the dream" or "decides what to do". When an act could be
+  misread, the event says who does what to whom: "Marta climbs down the drop-line from
+  the tower", not "drop-line lowered, Marta climbs".
 - `characters`: everyone who appears in the scene or matters to it (see below). Use `[]`
   only for a scene with no one in it.
 - `places`: the places the scene is set in or names, as short strings. May be `[]`.
-- `terms`: words the story uses with a special meaning (see below). May be `[]`.
+- `terms`: words the story uses with a special meaning, words the text explains, and
+  second names (see below). May be `[]`.
 - `open_questions`: what a reader is left wondering at this point, including any hint
   you were not allowed to state as fact. May be `[]`.
 
@@ -52,6 +58,10 @@ Each entry in `characters` is an object with these keys:
 - `name`: who this is.
 - `line`: what this character is or does **as of this scene**, in a few words. Write it
   for this scene only, not a running total: the lines are stacked into a timeline later.
+  When this scene's text says who the character is (a title, a family tie, a role), the
+  line says it as well as what they do, and never leaves it out the first time the text
+  says it. A line of actions alone is not enough then, and restating what this scene says
+  is not a running total.
 - `new`: `false` when the name is a name in the brief's character list; `true` when it is
   not.
 - `aka` and `quote`: optional, and always together (see below).
@@ -82,9 +92,13 @@ two names are the same person:
 
 ### Terms
 
-Each entry in `terms` is an object `{"term": ..., "meaning": ...}`. List a term only when
-it is new to the brief's glossary, or when this section changes what it means. `term` may
-not be empty. `meaning` is what the text has established, nothing more.
+Each entry in `terms` is an object `{"term": ..., "meaning": ...}`. A term is a word the
+story uses with a special meaning, any word or phrase the text explains or defines, or a
+second name this scene gives a place, person or thing. From a name pair such as "X/Y",
+list the name the glossary does not have yet, with a `meaning` that says it is the same as
+the other. List a term only when it is new to the brief's glossary, or when this section
+changes what it means. `term` may not be empty. `meaning` is what the text has
+established, nothing more.
 
 A term you list again replaces the glossary's meaning, so its `meaning` is the term's full
 current meaning: what the glossary already says, with this section's change worked in.
@@ -102,7 +116,8 @@ may be `""` and its `events` may be `[]`; every other rule still applies.
 
 A made-up example, not from any real book. The brief lists **Marta** (also: the
 key-keeper), and the glossary has **scrapper**. "Your section" says `"ch 4"` with 2
-scenes. Scene 2's text includes this sentence:
+scenes. Scene 1's text says Marta is the mayor's daughter. Scene 2's text includes this
+sentence:
 
 > Up on the tower stood the grey-coated man, whom the guards called Kell.
 
@@ -118,7 +133,7 @@ The reply:
       "summary": "Marta waits at the water tower for a stranger who promised to buy the key, and decides she will hand it over only after she sees the payment with her own eyes.",
       "events": ["Marta waits at the water tower", "Marta hides the key in her boot"],
       "characters": [
-        {"name": "Marta", "line": "guards the key, does not trust the buyer", "new": false}
+        {"name": "Marta", "line": "the mayor's daughter; guards the key, does not trust the buyer", "new": false}
       ],
       "places": ["water tower"],
       "terms": [{"term": "drop-line", "meaning": "a rope used to lower goods from the tower"}],
@@ -143,7 +158,8 @@ The reply:
 ```
 
 Kell is not in the brief, so he is `"new": true`; he would stay `true` in a third scene of
-this section too.
+this section too. Marta's scene 1 line says who she is because scene 1's text does; scene
+2's text does not, so her scene 2 line is what she does there.
 
 ## If your previous reply was rejected
 
